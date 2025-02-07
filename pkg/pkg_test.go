@@ -11,6 +11,7 @@ import (
 	"encoding/json"
 	"io"
 	"testing"
+	"time"
 
 	"github.com/gunawanwijaya/diego/pkg"
 	"github.com/stretchr/testify/require"
@@ -107,49 +108,7 @@ func TestCrypto__Signer(t *testing.T) {
 	keyP256 := pkg.Must1(ecdsa.GenerateKey(elliptic.P256(), rand.Reader))
 
 	msg := []byte("good day")
-	{
-		msg := []byte(`{"sub":"1234567890","name":"John Doe","iat":1516239022}`)
-		{
-			h := pkg.HMAC(crypto.SHA256, []byte("your-256-bit-secret"))
-			jwt := pkg.NewJWT(msg)
-			pkg.Must(jwt.Sign(h))
-			pkg.Must(jwt.Verify(h))
-			var reg pkg.RegisteredClaims
-			pkg.Must(jwt.Claims().Decode(&reg))
-			require.Equal(t, "1234567890", reg.Subject)
-			require.Equal(t, int64(1516239022), reg.IssuedAt.Unix())
-		}
-		{
-			r := pkg.ECDSASign(keyP256, false)
-			jwt := pkg.NewJWT(msg)
-			pkg.Must(jwt.Sign(r))
-			pkg.Must(jwt.Verify(r))
-			var reg pkg.RegisteredClaims
-			pkg.Must(jwt.Claims().Decode(&reg))
-			require.Equal(t, "1234567890", reg.Subject)
-			require.Equal(t, int64(1516239022), reg.IssuedAt.Unix())
-		}
-		{
-			r := pkg.PKCS1v15(key2048, crypto.SHA256)
-			jwt := pkg.NewJWT(msg)
-			pkg.Must(jwt.Sign(r))
-			pkg.Must(jwt.Verify(r))
-			var reg pkg.RegisteredClaims
-			pkg.Must(jwt.Claims().Decode(&reg))
-			require.Equal(t, "1234567890", reg.Subject)
-			require.Equal(t, int64(1516239022), reg.IssuedAt.Unix())
-		}
-		{
-			r := pkg.PSS(key2048, crypto.SHA256, nil)
-			jwt := pkg.NewJWT(msg)
-			pkg.Must(jwt.Sign(r))
-			pkg.Must(jwt.Verify(r))
-			var reg pkg.RegisteredClaims
-			pkg.Must(jwt.Claims().Decode(&reg))
-			require.Equal(t, "1234567890", reg.Subject)
-			require.Equal(t, int64(1516239022), reg.IssuedAt.Unix())
-		}
-	}
+
 	{
 		k := pkg.Nonce(64)
 		s := pkg.Must1(pkg.Validate(pkg.HMAC(crypto.SHA256, k)))
@@ -230,6 +189,103 @@ func TestCrypto__Signer(t *testing.T) {
 		sig := pkg.Must1(s.Sign(msg))
 		pkg.Must(v.Verify(msg, sig))
 	}
+}
+
+func TestCrypto_JWT(t *testing.T) {
+	key2048 := pkg.Must1(rsa.GenerateKey(rand.Reader, 2048))
+	keyP256 := pkg.Must1(ecdsa.GenerateKey(elliptic.P256(), rand.Reader))
+	claims := make(pkg.JWTClaims).
+		WithIssuer("1234567890").
+		WithSubject("1234567890").
+		WithAudience("1234567890").
+		WithExpiresAt(time.Unix(1516239022, 0)).
+		WithNotBefore(time.Unix(1516239022, 0)).
+		WithIssuedAt(time.Unix(1516239022, 0)).
+		WithID("1234567890").
+		With("name", "John Doe")
+	{
+		h := pkg.HMAC(crypto.SHA256, []byte("your-256-bit-secret"))
+		jwt := pkg.Must1(claims.Sign(h))
+		q := pkg.Must1(jwt.Verify(h))
+		require.Equal(t, "1234567890", q.Subject())
+		require.Equal(t, int64(1516239022), q.IssuedAt().Unix())
+		var name string
+		pkg.Must(q.Decode("name", &name))
+		require.Equal(t, "John Doe", name)
+		var str = jwt.String()
+		// t.Log(jwt.String())
+
+		qq, err := jwt.Verify(h, jwt.WithIssuer("abc"))
+		require.Error(t, err)
+		require.Nil(t, qq)
+
+		qq, err = jwt.Verify(h, jwt.WithSubject("abc"))
+		require.Error(t, err)
+		require.Nil(t, qq)
+
+		qq, err = jwt.Verify(h, jwt.WithAudience("abc"))
+		require.Error(t, err)
+		require.Nil(t, qq)
+
+		qq, err = jwt.Verify(h, jwt.WithExpiresAt(time.Unix(1316239022, 0)))
+		require.Error(t, err)
+		require.Nil(t, qq)
+
+		qq, err = jwt.Verify(h, jwt.WithNotBefore(time.Unix(1716239022, 0)))
+		require.Error(t, err)
+		require.Nil(t, qq)
+
+		qq, err = jwt.Verify(h, jwt.WithIssuedAt(time.Unix(1716239022, 0)))
+		require.Error(t, err)
+		require.Nil(t, qq)
+
+		qq, err = jwt.Verify(h, jwt.WithID("abc"))
+		require.Error(t, err)
+		require.Nil(t, qq)
+
+		jwt = new(pkg.JWT)
+		pkg.Must(jwt.UnmarshalText([]byte(str)))
+		qq = pkg.Must1(jwt.Verify(h))
+		pkg.Must(qq.Decode("name", &name))
+		require.Equal(t, "John Doe", name)
+		require.Equal(t, "1234567890", qq.Subject())
+		require.Equal(t, int64(1516239022), qq.IssuedAt().Unix())
+
+	}
+	{
+		r := pkg.ECDSASign(keyP256, false)
+		jwt := pkg.Must1(claims.Sign(r))
+		q := pkg.Must1(jwt.Verify(r))
+		require.Equal(t, "1234567890", q.Subject())
+		require.Equal(t, int64(1516239022), q.IssuedAt().Unix())
+		var name string
+		pkg.Must(q.Decode("name", &name))
+		require.Equal(t, "John Doe", name)
+		// t.Log(jwt.String())
+	}
+	{
+		r := pkg.PKCS1v15(key2048, crypto.SHA256)
+		jwt := pkg.Must1(claims.Sign(r))
+		q := pkg.Must1(jwt.Verify(r))
+		require.Equal(t, "1234567890", q.Subject())
+		require.Equal(t, int64(1516239022), q.IssuedAt().Unix())
+		var name string
+		pkg.Must(q.Decode("name", &name))
+		require.Equal(t, "John Doe", name)
+		// t.Log(jwt.String())
+	}
+	{
+		r := pkg.PSS(key2048, crypto.SHA256, nil)
+		jwt := pkg.Must1(claims.Sign(r))
+		q := pkg.Must1(jwt.Verify(r))
+		require.Equal(t, "1234567890", q.Subject())
+		require.Equal(t, int64(1516239022), q.IssuedAt().Unix())
+		var name string
+		pkg.Must(q.Decode("name", &name))
+		require.Equal(t, "John Doe", name)
+		// t.Log(jwt.String())
+	}
+
 }
 
 func TestCrypto_JWK(t *testing.T) {
