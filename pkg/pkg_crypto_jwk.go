@@ -778,7 +778,7 @@ func (x *B64RawUrl) UnmarshalJSON(p []byte) error {
 func (x *B64RawUrl) UnmarshalText(p []byte) error {
 	err := error(ErrUnimplemented)
 	if l := len(p); l > 0 {
-		*x, err = x.z().DecodeString(string(p[1 : l-1]))
+		*x, err = x.z().DecodeString(string(p))
 	}
 	return err
 }
@@ -807,7 +807,7 @@ func (x *B64Std) UnmarshalJSON(p []byte) error {
 func (x *B64Std) UnmarshalText(p []byte) error {
 	err := error(ErrUnimplemented)
 	if l := len(p); l > 0 {
-		*x, err = x.z().DecodeString(string(p[1 : l-1]))
+		*x, err = x.z().DecodeString(string(p))
 	}
 	return err
 }
