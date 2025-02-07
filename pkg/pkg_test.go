@@ -108,8 +108,57 @@ func TestCrypto__Signer(t *testing.T) {
 
 	msg := []byte("good day")
 	{
-		s := pkg.Must1(pkg.Validate(pkg.PSS(key1024, crypto.SHA512, nil)))
-		v := pkg.Must1(pkg.Validate(pkg.PSSVerify(&key1024.PublicKey, crypto.SHA512, nil)))
+		msg := []byte(`{"sub":"1234567890","name":"John Doe","iat":1516239022}`)
+		{
+			h := pkg.HMAC(crypto.SHA256, []byte("your-256-bit-secret"))
+			jwt := pkg.NewJWT(msg)
+			pkg.Must(jwt.Sign(h))
+			pkg.Must(jwt.Verify(h))
+			var reg pkg.RegisteredClaims
+			pkg.Must(jwt.Claims().Decode(&reg))
+			require.Equal(t, "1234567890", reg.Subject)
+			require.Equal(t, int64(1516239022), reg.IssuedAt.Unix())
+		}
+		{
+			r := pkg.ECDSASign(keyP256, false)
+			jwt := pkg.NewJWT(msg)
+			pkg.Must(jwt.Sign(r))
+			pkg.Must(jwt.Verify(r))
+			var reg pkg.RegisteredClaims
+			pkg.Must(jwt.Claims().Decode(&reg))
+			require.Equal(t, "1234567890", reg.Subject)
+			require.Equal(t, int64(1516239022), reg.IssuedAt.Unix())
+		}
+		{
+			r := pkg.PKCS1v15(key2048, crypto.SHA256)
+			jwt := pkg.NewJWT(msg)
+			pkg.Must(jwt.Sign(r))
+			pkg.Must(jwt.Verify(r))
+			var reg pkg.RegisteredClaims
+			pkg.Must(jwt.Claims().Decode(&reg))
+			require.Equal(t, "1234567890", reg.Subject)
+			require.Equal(t, int64(1516239022), reg.IssuedAt.Unix())
+		}
+		{
+			r := pkg.PSS(key2048, crypto.SHA256, nil)
+			jwt := pkg.NewJWT(msg)
+			pkg.Must(jwt.Sign(r))
+			pkg.Must(jwt.Verify(r))
+			var reg pkg.RegisteredClaims
+			pkg.Must(jwt.Claims().Decode(&reg))
+			require.Equal(t, "1234567890", reg.Subject)
+			require.Equal(t, int64(1516239022), reg.IssuedAt.Unix())
+		}
+	}
+	{
+		k := pkg.Nonce(64)
+		s := pkg.Must1(pkg.Validate(pkg.HMAC(crypto.SHA256, k)))
+		sig := pkg.Must1(s.Sign(msg))
+		pkg.Must(s.Verify(msg, sig))
+	}
+	{
+		s := pkg.Must1(pkg.Validate(pkg.PSS(key2048, crypto.SHA384, nil)))
+		v := pkg.Must1(pkg.Validate(pkg.PSSVerify(&key2048.PublicKey, crypto.SHA384, nil)))
 		sig := pkg.Must1(s.Sign(msg))
 		pkg.Must(v.Verify(msg, sig))
 	}
@@ -131,7 +180,6 @@ func TestCrypto__Signer(t *testing.T) {
 		sig := pkg.Must1(s.Sign(msg))
 		pkg.Must(v.Verify(msg, sig))
 	}
-
 	{
 		s := pkg.Must1(pkg.Validate(pkg.PKCS1v15(key1024, crypto.SHA512)))
 		v := pkg.Must1(pkg.Validate(pkg.PKCS1v15EncryptVerify(&key1024.PublicKey, crypto.SHA512)))
@@ -156,14 +204,18 @@ func TestCrypto__Signer(t *testing.T) {
 		sig := pkg.Must1(s.Sign(msg))
 		pkg.Must(v.Verify(msg, sig))
 	}
-
 	{
-		s := pkg.Must1(pkg.Validate(pkg.ECDSASign(keyP256)))
-		v := pkg.Must1(pkg.Validate(pkg.ECDSAVerify(&keyP256.PublicKey)))
+		s := pkg.Must1(pkg.Validate(pkg.ECDSASign(keyP256, false)))
+		v := pkg.Must1(pkg.Validate(pkg.ECDSAVerify(&keyP256.PublicKey, false)))
 		sig := pkg.Must1(s.Sign(msg))
 		pkg.Must(v.Verify(msg, sig))
 	}
-
+	{
+		s := pkg.Must1(pkg.Validate(pkg.ECDSASign(keyP256, true)))
+		v := pkg.Must1(pkg.Validate(pkg.ECDSAVerify(&keyP256.PublicKey, true)))
+		sig := pkg.Must1(s.Sign(msg))
+		pkg.Must(v.Verify(msg, sig))
+	}
 	{
 		pub, key := pkg.Must2(ed25519.GenerateKey(rand.Reader))
 		s := pkg.Must1(pkg.Validate(pkg.Ed25519Sign(pub, key, nil)))
@@ -171,7 +223,6 @@ func TestCrypto__Signer(t *testing.T) {
 		sig := pkg.Must1(s.Sign(msg))
 		pkg.Must(v.Verify(msg, sig))
 	}
-
 	{
 		pub, key := pkg.Must2(sign.GenerateKey(rand.Reader))
 		s := pkg.Must1(pkg.Validate(pkg.NaClSign(pub, key)))
