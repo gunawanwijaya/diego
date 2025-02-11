@@ -18,6 +18,7 @@ import (
 type Hasher interface {
 	Compare(plain []byte, hash []byte) error
 	Hash(plain []byte) ([]byte, error)
+	Tag(plain []byte) ([]byte, error)
 	Validator
 }
 
@@ -25,6 +26,7 @@ var _ Hasher = NopHasher{}
 
 type NopHasher struct{}
 
+func (NopHasher) Tag([]byte) ([]byte, error)   { return nil, ErrUnimplemented }
 func (NopHasher) Hash([]byte) ([]byte, error)  { return nil, ErrUnimplemented }
 func (NopHasher) Compare([]byte, []byte) error { return ErrUnimplemented }
 func (NopHasher) Validate() error              { return ErrUnimplemented }
@@ -79,17 +81,22 @@ func (x *argon2Args) Hash(plain []byte) ([]byte, error) {
 	if err != nil {
 		return nil, err
 	}
+	tag, err := x.Tag(plain)
+	if err != nil {
+		return nil, err
+	}
+	x.salt = Nonce(len(x.salt)) // replace old salt
+	return slices.Concat(hash, []byte(btoa(tag))), nil
+}
+
+func (x *argon2Args) Tag(plain []byte) ([]byte, error) {
 	switch x.hashType {
 	default:
 		return nil, ErrUnimplemented
 	case 1:
-		tag := argon2.Key(plain, x.salt, x.iterations, x.memorySizeKB, x.parallelism, x.tagLength)
-		x.salt = Nonce(len(x.salt)) // replace old salt
-		return slices.Concat(hash, []byte(btoa(tag))), nil
+		return argon2.Key(plain, x.salt, x.iterations, x.memorySizeKB, x.parallelism, x.tagLength), nil
 	case 2:
-		tag := argon2.IDKey(plain, x.salt, x.iterations, x.memorySizeKB, x.parallelism, x.tagLength)
-		x.salt = Nonce(len(x.salt)) // replace old salt
-		return slices.Concat(hash, []byte(btoa(tag))), nil
+		return argon2.IDKey(plain, x.salt, x.iterations, x.memorySizeKB, x.parallelism, x.tagLength), nil
 	}
 }
 
@@ -226,9 +233,17 @@ func (x *pbkdf2Args) Hash(plain []byte) ([]byte, error) {
 	if err != nil {
 		return nil, err
 	}
-	tag := pbkdf2.Key(plain, x.salt, x.iterations, x.tagLength, x.hash.New)
+	tag, err := x.Tag(plain)
+	if err != nil {
+		return nil, err
+	}
 	x.salt = Nonce(len(x.salt)) // replace old salt
 	return slices.Concat(hash, []byte(btoa(tag))), nil
+}
+
+func (x *pbkdf2Args) Tag(plain []byte) ([]byte, error) {
+	tag := pbkdf2.Key(plain, x.salt, x.iterations, x.tagLength, x.hash.New)
+	return tag, nil
 }
 
 func (x pbkdf2Args) MarshalText() ([]byte, error) {
@@ -339,12 +354,20 @@ func (x *hkdfArgs) Hash(plain []byte) ([]byte, error) {
 	if err != nil {
 		return nil, err
 	}
-	tag := make([]byte, x.tagLength, x.tagLength)
-	if _, err = io.ReadFull(hkdf.New(x.hash.New, plain, x.salt, x.info), tag); err != nil {
+	tag, err := x.Tag(plain)
+	if err != nil {
 		return nil, err
 	}
 	x.salt = Nonce(len(x.salt)) // replace old salt
 	return slices.Concat(hash, []byte(btoa(tag))), nil
+}
+
+func (x *hkdfArgs) Tag(plain []byte) ([]byte, error) {
+	tag := make([]byte, x.tagLength, x.tagLength)
+	if _, err := io.ReadFull(hkdf.New(x.hash.New, plain, x.salt, x.info), tag); err != nil {
+		return nil, err
+	}
+	return tag, nil
 }
 
 func (x hkdfArgs) MarshalText() ([]byte, error) {

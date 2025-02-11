@@ -65,34 +65,64 @@ func (x *naclSecretBox) Validate() error { return validateCipher(x) }
 // ---------------------------------------------------------------------------------------------------------------------
 
 // AES_CBC
-func AES_CBC(key []byte) Cipher { return &cipherArgs{_AES_CBC, key, nil} }
+func AES_CBC(key []byte) Cipher { return &cipherArgs{_AES_CBC, key, nil, nil} }
 
 // AES_CFB
-func AES_CFB(key []byte) CipherStream { return &cipherArgs{_AES_CFB, key, nil} }
+func AES_CFB(key []byte) CipherStream { return &cipherArgs{_AES_CFB, key, nil, nil} }
 
 // AES_CTR
-func AES_CTR(key []byte) CipherStream { return &cipherArgs{_AES_CTR, key, nil} }
+func AES_CTR(key []byte) CipherStream { return &cipherArgs{_AES_CTR, key, nil, nil} }
 
 // AES_OFB
-func AES_OFB(key []byte) CipherStream { return &cipherArgs{_AES_OFB, key, nil} }
+func AES_OFB(key []byte) CipherStream { return &cipherArgs{_AES_OFB, key, nil, nil} }
 
 // AES_GCM
-func AES_GCM(key []byte) Cipher { return &cipherArgs{_AES_GCM, key, nil} }
+func AES_GCM(key []byte) Cipher { return &cipherArgs{_AES_GCM, key, nil, nil} }
 
 // ChaCha20Poly1305
-func ChaCha20Poly1305(key []byte) Cipher { return &cipherArgs{_ChaCha20Poly1305, key, nil} }
+func ChaCha20Poly1305(key []byte) Cipher { return &cipherArgs{_c, key, nil, nil} }
 
 // XChaCha20Poly1305
-func XChaCha20Poly1305(key []byte) Cipher { return &cipherArgs{_XChaCha20Poly1305, key, nil} }
+func XChaCha20Poly1305(key []byte) Cipher { return &cipherArgs{_xc, key, nil, nil} }
 
 // AES_GCM_Data
-func AES_GCM_Data(key, add []byte) Cipher { return &cipherArgs{_AES_GCM, key, add} }
+func AES_GCM_Data(key, add []byte) Cipher { return &cipherArgs{_AES_GCM, key, nil, add} }
 
 // ChaCha20Poly1305_Data
-func ChaCha20Poly1305_Data(key, add []byte) Cipher { return &cipherArgs{_ChaCha20Poly1305, key, add} }
+func ChaCha20Poly1305_Data(key, add []byte) Cipher { return &cipherArgs{_c, key, nil, add} }
 
 // XChaCha20Poly1305_Data
-func XChaCha20Poly1305_Data(key, add []byte) Cipher { return &cipherArgs{_XChaCha20Poly1305, key, add} }
+func XChaCha20Poly1305_Data(key, add []byte) Cipher { return &cipherArgs{_xc, key, nil, add} }
+
+// AES_CBC_IV
+func AES_CBC_IV(key, iv []byte) Cipher { return &cipherArgs{_AES_CBC, key, iv, nil} }
+
+// AES_CFB_IV
+func AES_CFB_IV(key, iv []byte) CipherStream { return &cipherArgs{_AES_CFB, key, iv, nil} }
+
+// AES_CTR_IV
+func AES_CTR_IV(key, iv []byte) CipherStream { return &cipherArgs{_AES_CTR, key, iv, nil} }
+
+// AES_OFB_IV
+func AES_OFB_IV(key, iv []byte) CipherStream { return &cipherArgs{_AES_OFB, key, iv, nil} }
+
+// AES_GCM_IV
+func AES_GCM_IV(key, iv []byte) Cipher { return &cipherArgs{_AES_GCM, key, iv, nil} }
+
+// ChaCha20Poly1305_IV
+func ChaCha20Poly1305_IV(key, iv []byte) Cipher { return &cipherArgs{_c, key, iv, nil} }
+
+// XChaCha20Poly1305_IV
+func XChaCha20Poly1305_IV(key, iv []byte) Cipher { return &cipherArgs{_xc, key, iv, nil} }
+
+// AES_GCM_IVData
+func AES_GCM_IVData(key, iv, add []byte) Cipher { return &cipherArgs{_AES_GCM, key, iv, add} }
+
+// ChaCha20Poly1305_IVData
+func ChaCha20Poly1305_IVData(key, iv, add []byte) Cipher { return &cipherArgs{_c, key, iv, add} }
+
+// XChaCha20Poly1305_IVData
+func XChaCha20Poly1305_IVData(key, iv, add []byte) Cipher { return &cipherArgs{_xc, key, iv, add} }
 
 type cipherMode int
 
@@ -105,11 +135,14 @@ const (
 	_AES_OFB
 	_ChaCha20Poly1305
 	_XChaCha20Poly1305
+
+	_c  = _ChaCha20Poly1305
+	_xc = _XChaCha20Poly1305
 )
 
 type cipherArgs struct {
 	cipherMode
-	key            []byte
+	key, iv        []byte
 	additionalData []byte
 }
 
@@ -118,44 +151,56 @@ func (x *cipherArgs) Encrypt(msg []byte) ([]byte, error) {
 		return msg, ErrorStr("invalid encrypt")
 	}
 	var b cipher.Block
-	var iv, cip []byte
-
+	var dst, iv []byte
 	switch x.cipherMode {
 	case _AES_CBC, _AES_CFB, _AES_CTR, _AES_GCM, _AES_OFB:
 		var err error
 		if b, err = aes.NewCipher(x.key); err != nil {
 			return nil, err
 		}
-		iv, cip = Nonce(b.BlockSize()), make([]byte, len(msg))
+		if iv = Nonce(b.BlockSize()); len(x.iv) == b.BlockSize() {
+			dst, iv = nil, x.iv
+		} else {
+			dst = iv
+		}
 	}
 
+	var blk = func(dst []byte, block cipher.BlockMode) ([]byte, error) {
+		var msgPad = pkcs5padding(b.BlockSize(), msg)
+		var cip = make([]byte, len(msgPad))
+		block.CryptBlocks(cip, msgPad)
+		return slices.Concat(dst, cip), nil
+	}
+	var xor = func(dst []byte, stream cipher.Stream) ([]byte, error) {
+		var cip = make([]byte, len(msg))
+		stream.XORKeyStream(cip, msg)
+		return slices.Concat(dst, cip), nil
+	}
 	var seal = func(aead cipher.AEAD, err error) ([]byte, error) {
 		if err != nil {
 			return nil, err
 		}
-		iv = Nonce(aead.NonceSize())
-		return aead.Seal(iv, iv, msg, x.additionalData), nil
+		if n := aead.NonceSize(); len(x.iv) == n {
+			return aead.Seal(nil, x.iv, msg, x.additionalData), nil
+		} else {
+			iv := Nonce(n)
+			return aead.Seal(iv, iv, msg, x.additionalData), nil
+		}
 	}
 
 	switch x.cipherMode {
 	default:
 		return nil, ErrUnimplemented
 	case _AES_CBC:
-		msgPad := pkcs5padding(b.BlockSize(), msg)
-		cip = make([]byte, len(msgPad))
-		cipher.NewCBCEncrypter(b, iv).CryptBlocks(cip, msgPad)
-		return slices.Concat(iv, cip), nil
+		return blk(dst, cipher.NewCBCEncrypter(b, iv))
 	case _AES_CFB:
-		cipher.NewCFBEncrypter(b, iv).XORKeyStream(cip, msg)
-		return slices.Concat(iv, cip), nil
+		return xor(dst, cipher.NewCFBEncrypter(b, iv))
 	case _AES_CTR:
-		cipher.NewCTR(b, iv).XORKeyStream(cip, msg)
-		return slices.Concat(iv, cip), nil
+		return xor(dst, cipher.NewCTR(b, iv))
 	case _AES_GCM:
 		return seal(cipher.NewGCM(b))
 	case _AES_OFB:
-		cipher.NewOFB(b, iv).XORKeyStream(cip, msg)
-		return slices.Concat(iv, cip), nil
+		return xor(dst, cipher.NewOFB(b, iv))
 	case _ChaCha20Poly1305:
 		return seal(chacha20poly1305.New(x.key))
 	case _XChaCha20Poly1305:
@@ -166,43 +211,54 @@ func (x *cipherArgs) Encrypt(msg []byte) ([]byte, error) {
 func (x *cipherArgs) Decrypt(cip []byte) ([]byte, error) {
 	var b cipher.Block
 	var n int
-	var msg []byte
+	var iv []byte
 	switch x.cipherMode {
 	case _AES_CBC, _AES_CFB, _AES_CTR, _AES_GCM, _AES_OFB:
 		var err error
 		if b, err = aes.NewCipher(x.key); err != nil {
 			return nil, err
 		}
-		n = b.BlockSize()
-		msg = make([]byte, len(cip[n:]))
+		if n = b.BlockSize(); len(x.iv) == n {
+			n, iv = 0, x.iv
+		} else {
+			iv = cip[:n]
+		}
 	}
 
+	var blk = func(n int, block cipher.BlockMode) ([]byte, error) {
+		var msg = make([]byte, len(cip[n:]))
+		block.CryptBlocks(msg, cip[n:])
+		return pkcs5trimming(n, msg), nil
+	}
+	var xor = func(n int, stream cipher.Stream) ([]byte, error) {
+		var msg = make([]byte, len(cip[n:]))
+		stream.XORKeyStream(msg, cip[n:])
+		return msg, nil
+	}
 	var open = func(aead cipher.AEAD, err error) ([]byte, error) {
 		if err != nil {
 			return nil, err
 		}
-		n = aead.NonceSize()
-		return aead.Open(nil, cip[:n], cip[n:], x.additionalData)
+		if n := aead.NonceSize(); len(x.iv) == n {
+			return aead.Open(nil, x.iv, cip, x.additionalData)
+		} else {
+			return aead.Open(nil, cip[:n], cip[n:], x.additionalData)
+		}
 	}
 
 	switch x.cipherMode {
 	default:
 		return nil, ErrUnimplemented
 	case _AES_CBC:
-		cipher.NewCBCDecrypter(b, cip[:n]).CryptBlocks(msg, cip[n:])
-		msg = pkcs5trimming(n, msg)
-		return msg, nil
+		return blk(n, cipher.NewCBCDecrypter(b, iv))
 	case _AES_CFB:
-		cipher.NewCFBDecrypter(b, cip[:n]).XORKeyStream(msg, cip[n:])
-		return msg, nil
+		return xor(n, cipher.NewCFBDecrypter(b, iv))
 	case _AES_CTR:
-		cipher.NewCTR(b, cip[:n]).XORKeyStream(msg, cip[n:])
-		return msg, nil
+		return xor(n, cipher.NewCTR(b, iv))
 	case _AES_GCM:
 		return open(cipher.NewGCM(b))
 	case _AES_OFB:
-		cipher.NewOFB(b, cip[:n]).XORKeyStream(msg, cip[n:])
-		return msg, nil
+		return xor(n, cipher.NewOFB(b, iv))
 	case _ChaCha20Poly1305:
 		return open(chacha20poly1305.New(x.key))
 	case _XChaCha20Poly1305:
@@ -311,7 +367,7 @@ func Nonce(n int) []byte { p := make([]byte, n, n); rand.Read(p); return p }
 
 func pkcs5padding(n int, p []byte) []byte {
 	m := n - (len(p) % n)
-	return append(p, bytes.Repeat([]byte{byte(m)}, m)...)
+	return slices.Concat(p, bytes.Repeat([]byte{byte(m)}, m))
 }
 
 func pkcs5trimming(_ int, p []byte) []byte {
