@@ -9,7 +9,6 @@ import (
 	"crypto/rand"
 	"crypto/rsa"
 	"encoding/json"
-	"io"
 	"testing"
 	"time"
 
@@ -20,12 +19,52 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
+func TestRatchet(t *testing.T) {
+	var a, b = new(pkg.RatchetA), new(pkg.RatchetB)
+	a.IdentityKey = pkg.Must1(ecdh.X25519().GenerateKey(rand.Reader))
+	a.EphemeralKey = pkg.Must1(ecdh.X25519().GenerateKey(rand.Reader))
+	b.IdentityKey = pkg.Must1(ecdh.X25519().GenerateKey(rand.Reader))
+	b.SignedPreKey = pkg.Must1(ecdh.X25519().GenerateKey(rand.Reader))
+	b.OneTimePreKey = pkg.Must1(ecdh.X25519().GenerateKey(rand.Reader))
+	pkg.Must(a.X3DH(b.IdentityKey.PublicKey(), b.SignedPreKey.PublicKey(), b.OneTimePreKey.PublicKey()))
+	pkg.Must(b.X3DH(a.IdentityKey.PublicKey(), a.EphemeralKey.PublicKey()))
+
+	a.Remote(b.PublicKey())
+	{
+		msg := []byte("good day sir!")
+		cip := pkg.Must1(a.Send(msg))
+		dec := pkg.Must1(b.Recv(cip))
+		require.Equal(t, msg, dec)
+	}
+	{
+		msg := []byte("good day to you too sir!")
+		cip := pkg.Must1(b.Send(msg))
+		dec := pkg.Must1(a.Recv(cip))
+		require.Equal(t, msg, dec)
+	}
+	{
+		msg := []byte("well, a very fine day")
+		cip := pkg.Must1(b.Send(msg))
+		dec := pkg.Must1(a.Recv(cip))
+		require.Equal(t, msg, dec)
+	}
+	{
+		msg := []byte("yes indeed")
+		cip := pkg.Must1(b.Send(msg))
+		dec := pkg.Must1(a.Recv(cip))
+		require.Equal(t, msg, dec)
+	}
+	{
+		msg := []byte("good day sir!")
+		cip := pkg.Must1(a.Send(msg))
+		dec := pkg.Must1(b.Recv(cip))
+		require.Equal(t, msg, dec)
+	}
+}
+
 func TestCrypto__Cipher(t *testing.T) {
 	l := 32
-	key32 := make([]byte, l)
-	n := pkg.Must1(io.ReadFull(rand.Reader, key32))
-	require.Equal(t, l, n)
-
+	key32 := pkg.Nonce(l)
 	msg := []byte("good day")
 
 	c := pkg.Must1(pkg.Validate(pkg.AES_CBC(key32)))
@@ -33,10 +72,12 @@ func TestCrypto__Cipher(t *testing.T) {
 	dec := pkg.Must1(c.Decrypt(cip))
 	require.Equal(t, msg, dec)
 
-	c = pkg.Must1(pkg.Validate(pkg.AES_CFB(key32)))
-	cip = pkg.Must1(c.Encrypt(msg))
-	dec = pkg.Must1(c.Decrypt(cip))
-	require.Equal(t, msg, dec)
+	{
+		c := pkg.Must1(pkg.Validate(pkg.AES_CBC_IV(key32, pkg.Nonce(16))))
+		cip := pkg.Must1(c.Encrypt(msg))
+		dec := pkg.Must1(c.Decrypt(cip))
+		require.Equal(t, msg, dec)
+	}
 
 	c = pkg.Must1(pkg.Validate(pkg.AES_CTR(key32)))
 	cip = pkg.Must1(c.Encrypt(msg))
@@ -44,11 +85,6 @@ func TestCrypto__Cipher(t *testing.T) {
 	require.Equal(t, msg, dec)
 
 	c = pkg.Must1(pkg.Validate(pkg.AES_GCM(key32)))
-	cip = pkg.Must1(c.Encrypt(msg))
-	dec = pkg.Must1(c.Decrypt(cip))
-	require.Equal(t, msg, dec)
-
-	c = pkg.Must1(pkg.Validate(pkg.AES_OFB(key32)))
 	cip = pkg.Must1(c.Encrypt(msg))
 	dec = pkg.Must1(c.Decrypt(cip))
 	require.Equal(t, msg, dec)
@@ -100,6 +136,13 @@ func TestCrypto__Hasher(t *testing.T) {
 	tag2 = pkg.Must1(h.Hash(key))
 	require.NoError(t, h.Compare(key, tag2))
 	require.NotEqual(t, tag1, tag2, "tag1=%s tag2=%s", tag1, tag2)
+
+	salt := pkg.Nonce(32)
+	h1 := pkg.Must1(pkg.Validate(pkg.HKDF(salt, nil, 32, crypto.SHA256)))
+	h2 := pkg.Must1(pkg.Validate(pkg.HKDF(salt, nil, 32, crypto.SHA256)))
+	tag1 = pkg.Must1(h1.Tag(key))
+	tag2 = pkg.Must1(h2.Tag(key))
+	require.Equal(t, tag1, tag2)
 }
 
 func TestCrypto__Signer(t *testing.T) {

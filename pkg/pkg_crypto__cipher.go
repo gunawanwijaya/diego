@@ -5,6 +5,7 @@ import (
 	"crypto/aes"
 	"crypto/cipher"
 	"crypto/rand"
+	"errors"
 	"io"
 	"slices"
 
@@ -21,6 +22,12 @@ type Encrypter interface {
 type Cipher interface {
 	Decrypt(cip []byte) ([]byte, error)
 	Encrypter
+}
+
+type CipherStream interface {
+	Cipher
+	StreamWriter(w io.Writer) (io.Writer, error)
+	StreamReader(r io.Reader) (io.Reader, error)
 }
 
 var _ Cipher = NopCipher{}
@@ -63,282 +70,183 @@ func (x *naclSecretBox) Decrypt(cip []byte) ([]byte, error) {
 func (x *naclSecretBox) Validate() error { return validateCipher(x) }
 
 // ---------------------------------------------------------------------------------------------------------------------
+//
+// ---------------------------------------------------------------------------------------------------------------------
 
-// AES_CBC
-func AES_CBC(key []byte) Cipher { return &cipherArgs{_AES_CBC, key, nil, nil} }
+func AES_CBC_IV(key, iv []byte) Cipher {
+	b, err := aes.NewCipher(key)
+	return cipherBlock{b, err, iv}
+}
+func AES_CBC(key []byte) Cipher { return AES_CBC_IV(key, nil) }
 
-// AES_CFB
-func AES_CFB(key []byte) CipherStream { return &cipherArgs{_AES_CFB, key, nil, nil} }
-
-// AES_CTR
-func AES_CTR(key []byte) CipherStream { return &cipherArgs{_AES_CTR, key, nil, nil} }
-
-// AES_OFB
-func AES_OFB(key []byte) CipherStream { return &cipherArgs{_AES_OFB, key, nil, nil} }
-
-// AES_GCM
-func AES_GCM(key []byte) Cipher { return &cipherArgs{_AES_GCM, key, nil, nil} }
-
-// ChaCha20Poly1305
-func ChaCha20Poly1305(key []byte) Cipher { return &cipherArgs{_c, key, nil, nil} }
-
-// XChaCha20Poly1305
-func XChaCha20Poly1305(key []byte) Cipher { return &cipherArgs{_xc, key, nil, nil} }
-
-// AES_GCM_Data
-func AES_GCM_Data(key, add []byte) Cipher { return &cipherArgs{_AES_GCM, key, nil, add} }
-
-// ChaCha20Poly1305_Data
-func ChaCha20Poly1305_Data(key, add []byte) Cipher { return &cipherArgs{_c, key, nil, add} }
-
-// XChaCha20Poly1305_Data
-func XChaCha20Poly1305_Data(key, add []byte) Cipher { return &cipherArgs{_xc, key, nil, add} }
-
-// AES_CBC_IV
-func AES_CBC_IV(key, iv []byte) Cipher { return &cipherArgs{_AES_CBC, key, iv, nil} }
-
-// AES_CFB_IV
-func AES_CFB_IV(key, iv []byte) CipherStream { return &cipherArgs{_AES_CFB, key, iv, nil} }
-
-// AES_CTR_IV
-func AES_CTR_IV(key, iv []byte) CipherStream { return &cipherArgs{_AES_CTR, key, iv, nil} }
-
-// AES_OFB_IV
-func AES_OFB_IV(key, iv []byte) CipherStream { return &cipherArgs{_AES_OFB, key, iv, nil} }
-
-// AES_GCM_IV
-func AES_GCM_IV(key, iv []byte) Cipher { return &cipherArgs{_AES_GCM, key, iv, nil} }
-
-// ChaCha20Poly1305_IV
-func ChaCha20Poly1305_IV(key, iv []byte) Cipher { return &cipherArgs{_c, key, iv, nil} }
-
-// XChaCha20Poly1305_IV
-func XChaCha20Poly1305_IV(key, iv []byte) Cipher { return &cipherArgs{_xc, key, iv, nil} }
-
-// AES_GCM_IVData
-func AES_GCM_IVData(key, iv, add []byte) Cipher { return &cipherArgs{_AES_GCM, key, iv, add} }
-
-// ChaCha20Poly1305_IVData
-func ChaCha20Poly1305_IVData(key, iv, add []byte) Cipher { return &cipherArgs{_c, key, iv, add} }
-
-// XChaCha20Poly1305_IVData
-func XChaCha20Poly1305_IVData(key, iv, add []byte) Cipher { return &cipherArgs{_xc, key, iv, add} }
-
-type cipherMode int
-
-const (
-	_ cipherMode = iota
-	_AES_CBC
-	_AES_CFB
-	_AES_CTR
-	_AES_GCM
-	_AES_OFB
-	_ChaCha20Poly1305
-	_XChaCha20Poly1305
-
-	_c  = _ChaCha20Poly1305
-	_xc = _XChaCha20Poly1305
-)
-
-type cipherArgs struct {
-	cipherMode
-	key, iv        []byte
-	additionalData []byte
+type cipherBlock struct {
+	cipher.Block
+	err error
+	iv  []byte
 }
 
-func (x *cipherArgs) Encrypt(msg []byte) ([]byte, error) {
-	if len(msg) < 1 {
-		return msg, ErrorStr("invalid encrypt")
-	}
-	var b cipher.Block
-	var dst, iv []byte
-	switch x.cipherMode {
-	case _AES_CBC, _AES_CFB, _AES_CTR, _AES_GCM, _AES_OFB:
-		var err error
-		if b, err = aes.NewCipher(x.key); err != nil {
-			return nil, err
-		}
-		if iv = Nonce(b.BlockSize()); len(x.iv) == b.BlockSize() {
-			dst, iv = nil, x.iv
-		} else {
-			dst = iv
-		}
-	}
-
-	var blk = func(dst []byte, block cipher.BlockMode) ([]byte, error) {
-		var msgPad = pkcs5padding(b.BlockSize(), msg)
+func (x cipherBlock) Encrypt(msg []byte) ([]byte, error) {
+	if x.err != nil {
+		return nil, x.err
+	} else {
+		var n, dst, iv = dstiv(x.Block.BlockSize(), x.iv)
+		var msgPad = pkcs5padding(n, msg)
 		var cip = make([]byte, len(msgPad))
-		block.CryptBlocks(cip, msgPad)
+		cipher.NewCBCEncrypter(x.Block, iv).CryptBlocks(cip, msgPad)
 		return slices.Concat(dst, cip), nil
-	}
-	var xor = func(dst []byte, stream cipher.Stream) ([]byte, error) {
-		var cip = make([]byte, len(msg))
-		stream.XORKeyStream(cip, msg)
-		return slices.Concat(dst, cip), nil
-	}
-	var seal = func(aead cipher.AEAD, err error) ([]byte, error) {
-		if err != nil {
-			return nil, err
-		}
-		if n := aead.NonceSize(); len(x.iv) == n {
-			return aead.Seal(nil, x.iv, msg, x.additionalData), nil
-		} else {
-			iv := Nonce(n)
-			return aead.Seal(iv, iv, msg, x.additionalData), nil
-		}
-	}
-
-	switch x.cipherMode {
-	default:
-		return nil, ErrUnimplemented
-	case _AES_CBC:
-		return blk(dst, cipher.NewCBCEncrypter(b, iv))
-	case _AES_CFB:
-		return xor(dst, cipher.NewCFBEncrypter(b, iv))
-	case _AES_CTR:
-		return xor(dst, cipher.NewCTR(b, iv))
-	case _AES_GCM:
-		return seal(cipher.NewGCM(b))
-	case _AES_OFB:
-		return xor(dst, cipher.NewOFB(b, iv))
-	case _ChaCha20Poly1305:
-		return seal(chacha20poly1305.New(x.key))
-	case _XChaCha20Poly1305:
-		return seal(chacha20poly1305.NewX(x.key))
 	}
 }
-
-func (x *cipherArgs) Decrypt(cip []byte) ([]byte, error) {
-	var b cipher.Block
-	var n int
-	var iv []byte
-	switch x.cipherMode {
-	case _AES_CBC, _AES_CFB, _AES_CTR, _AES_GCM, _AES_OFB:
-		var err error
-		if b, err = aes.NewCipher(x.key); err != nil {
-			return nil, err
-		}
-		if n = b.BlockSize(); len(x.iv) == n {
-			n, iv = 0, x.iv
-		} else {
-			iv = cip[:n]
-		}
-	}
-
-	var blk = func(n int, block cipher.BlockMode) ([]byte, error) {
-		var msg = make([]byte, len(cip[n:]))
-		block.CryptBlocks(msg, cip[n:])
+func (x cipherBlock) Decrypt(cip []byte) ([]byte, error) {
+	if x.err != nil {
+		return nil, x.err
+	} else {
+		var n, iv, cip = ivcip(x.Block.BlockSize(), x.iv, cip)
+		var msg = make([]byte, len(cip))
+		cipher.NewCBCDecrypter(x.Block, iv).CryptBlocks(msg, cip)
 		return pkcs5trimming(n, msg), nil
 	}
-	var xor = func(n int, stream cipher.Stream) ([]byte, error) {
-		var msg = make([]byte, len(cip[n:]))
-		stream.XORKeyStream(msg, cip[n:])
-		return msg, nil
-	}
-	var open = func(aead cipher.AEAD, err error) ([]byte, error) {
-		if err != nil {
-			return nil, err
-		}
-		if n := aead.NonceSize(); len(x.iv) == n {
-			return aead.Open(nil, x.iv, cip, x.additionalData)
-		} else {
-			return aead.Open(nil, cip[:n], cip[n:], x.additionalData)
-		}
-	}
-
-	switch x.cipherMode {
-	default:
-		return nil, ErrUnimplemented
-	case _AES_CBC:
-		return blk(n, cipher.NewCBCDecrypter(b, iv))
-	case _AES_CFB:
-		return xor(n, cipher.NewCFBDecrypter(b, iv))
-	case _AES_CTR:
-		return xor(n, cipher.NewCTR(b, iv))
-	case _AES_GCM:
-		return open(cipher.NewGCM(b))
-	case _AES_OFB:
-		return xor(n, cipher.NewOFB(b, iv))
-	case _ChaCha20Poly1305:
-		return open(chacha20poly1305.New(x.key))
-	case _XChaCha20Poly1305:
-		return open(chacha20poly1305.NewX(x.key))
-	}
 }
-
-func (x *cipherArgs) Validate() error { return validateCipher(x) }
+func (x cipherBlock) Validate() error { return errors.Join(x.err, validateCipher(x)) }
 
 // ---------------------------------------------------------------------------------------------------------------------
 //
 // ---------------------------------------------------------------------------------------------------------------------
 
-type CipherStream interface {
-	Cipher
-	StreamWriter(w io.Writer) (io.Writer, error)
-	StreamReader(r io.Reader) (io.Reader, error)
+func AES_CTR_IV(key, iv []byte) CipherStream {
+	b, err := aes.NewCipher(key)
+	return cipherStream{b, err, iv, nil, nil}
 }
+func AES_CTR(key []byte) CipherStream { return AES_CTR_IV(key, nil) }
 
-type stream struct {
+type cipherStream struct {
+	cipher.Block
+	err error
+	iv  []byte
+
 	io.Writer
 	io.Reader
-	s cipher.Stream
 }
 
-func (x *cipherArgs) StreamWriter(w io.Writer) (io.Writer, error) {
-	b, err := aes.NewCipher(x.key)
-	if err != nil {
-		return nil, err
+func (x cipherStream) Encrypt(msg []byte) ([]byte, error) {
+	if x.err != nil {
+		return nil, x.err
+	} else {
+		var _, dst, iv = dstiv(x.Block.BlockSize(), x.iv)
+		var cip = make([]byte, len(msg))
+		cipher.NewCTR(x.Block, iv).XORKeyStream(cip, msg)
+		return slices.Concat(dst, cip), nil
 	}
-	iv := Nonce(b.BlockSize())
-	if _, err = w.Write(iv); err != nil {
-		return nil, err
+}
+func (x cipherStream) Decrypt(cip []byte) ([]byte, error) {
+	if x.err != nil {
+		return nil, x.err
+	} else {
+		var _, iv, cip = ivcip(x.Block.BlockSize(), x.iv, cip)
+		var msg = make([]byte, len(cip))
+		cipher.NewCTR(x.Block, iv).XORKeyStream(msg, cip)
+		return msg, nil
 	}
-	switch x.cipherMode {
-	default:
-		return nil, ErrUnimplemented
-	case _AES_CFB:
-		return stream{w, nil, cipher.NewCFBEncrypter(b, iv)}, nil
-	case _AES_CTR:
-		return stream{w, nil, cipher.NewCTR(b, iv)}, nil
-	case _AES_OFB:
-		return stream{w, nil, cipher.NewOFB(b, iv)}, nil
+}
+func (x cipherStream) StreamWriter(w io.Writer) (io.Writer, error) {
+	if x.Writer == nil {
+		return nil, ErrorStr("invalid Writer")
+	} else if len(x.iv) != x.Block.BlockSize() {
+		return nil, ErrorStr("invalid iv")
+	} else {
+		x.Writer = w
+		return x, nil
 	}
+}
+func (x cipherStream) StreamReader(r io.Reader) (io.Reader, error) {
+	if x.Reader == nil {
+		return nil, ErrorStr("invalid Reader")
+	} else if len(x.iv) != x.Block.BlockSize() {
+		return nil, ErrorStr("invalid iv")
+	} else {
+		x.Reader = r
+		return x, nil
+	}
+}
+func (x cipherStream) Write(p []byte) (int, error) {
+	if x.err != nil {
+		return 0, x.err
+	} else {
+		buf := make([]byte, len(p))
+		cipher.NewCTR(x.Block, x.iv).XORKeyStream(buf, p)
+		return x.Writer.Write(buf)
+	}
+}
+func (x cipherStream) Read(p []byte) (int, error) {
+	if x.err != nil {
+		return 0, x.err
+	} else if x.Reader == nil {
+		return 0, ErrorStr("invalid Reader")
+	} else if len(x.iv) != x.Block.BlockSize() {
+		return 0, ErrorStr("invalid iv")
+	} else {
+		n, err := x.Reader.Read(p)
+		buf := make([]byte, n)
+		cipher.NewCTR(x.Block, x.iv).XORKeyStream(buf, p[:n])
+		copy(p, buf)
+		return n, err
+	}
+}
+func (x cipherStream) Validate() error { return errors.Join(x.err, validateCipher(x)) }
+
+// ---------------------------------------------------------------------------------------------------------------------
+//
+// ---------------------------------------------------------------------------------------------------------------------
+
+func AES_GCM_IVData(key, iv, add []byte) Cipher {
+	if b, err := aes.NewCipher(key); err != nil {
+		return cipherAEAD{nil, err, iv, add}
+	} else {
+		aead, err := cipher.NewGCM(b)
+		return cipherAEAD{aead, err, iv, add}
+	}
+}
+func ChaCha20Poly1305_IVData(key, iv, add []byte) Cipher {
+	aead, err := chacha20poly1305.New(key)
+	return cipherAEAD{aead, err, iv, add}
+}
+func XChaCha20Poly1305_IVData(key, iv, add []byte) Cipher {
+	aead, err := chacha20poly1305.NewX(key)
+	return cipherAEAD{aead, err, iv, add}
 }
 
-func (x *cipherArgs) StreamReader(r io.Reader) (io.Reader, error) {
-	b, err := aes.NewCipher(x.key)
-	if err != nil {
-		return nil, err
-	}
-	iv := make([]byte, b.BlockSize())
-	if _, err = r.Read(iv); err != nil {
-		return nil, err
-	}
-	switch x.cipherMode {
-	default:
-		return nil, ErrUnimplemented
-	case _AES_CFB:
-		return stream{nil, r, cipher.NewCFBDecrypter(b, iv)}, nil
-	case _AES_CTR:
-		return stream{nil, r, cipher.NewCTR(b, iv)}, nil
-	case _AES_OFB:
-		return stream{nil, r, cipher.NewOFB(b, iv)}, nil
-	}
+func AES_GCM(key []byte) Cipher                     { return AES_GCM_IV(key, nil) }
+func AES_GCM_Data(key, add []byte) Cipher           { return AES_GCM_IVData(key, nil, add) }
+func AES_GCM_IV(key, iv []byte) Cipher              { return AES_GCM_IVData(key, iv, nil) }
+func ChaCha20Poly1305(key []byte) Cipher            { return ChaCha20Poly1305_IV(key, nil) }
+func ChaCha20Poly1305_Data(key, add []byte) Cipher  { return ChaCha20Poly1305_IVData(key, nil, add) }
+func ChaCha20Poly1305_IV(key, iv []byte) Cipher     { return ChaCha20Poly1305_IVData(key, iv, nil) }
+func XChaCha20Poly1305(key []byte) Cipher           { return XChaCha20Poly1305_IV(key, nil) }
+func XChaCha20Poly1305_Data(key, add []byte) Cipher { return XChaCha20Poly1305_IVData(key, nil, add) }
+func XChaCha20Poly1305_IV(key, iv []byte) Cipher    { return XChaCha20Poly1305_IVData(key, iv, nil) }
+
+type cipherAEAD struct {
+	cipher.AEAD
+	err                error
+	iv, additionalData []byte
 }
 
-func (x stream) Write(p []byte) (int, error) {
-	buf := make([]byte, len(p))
-	x.s.XORKeyStream(buf, p)
-	return x.Writer.Write(buf)
+func (x cipherAEAD) Encrypt(msg []byte) ([]byte, error) {
+	if x.err != nil {
+		return nil, x.err
+	} else {
+		var _, dst, iv = dstiv(x.AEAD.NonceSize(), x.iv)
+		return x.AEAD.Seal(dst, iv, msg, x.additionalData), nil
+	}
 }
-
-func (x stream) Read(p []byte) (int, error) {
-	n, err := x.Reader.Read(p)
-	buf := make([]byte, n)
-	x.s.XORKeyStream(buf, p[:n])
-	copy(p, buf)
-	return n, err
+func (x cipherAEAD) Decrypt(cip []byte) ([]byte, error) {
+	if x.err != nil {
+		return nil, x.err
+	} else {
+		var _, iv, cip = ivcip(x.AEAD.NonceSize(), x.iv, cip)
+		return x.AEAD.Open(nil, iv, cip, x.additionalData)
+	}
 }
+func (x cipherAEAD) Validate() error { return errors.Join(x.err, validateCipher(x)) }
 
 // ---------------------------------------------------------------------------------------------------------------------
 //
@@ -373,4 +281,21 @@ func pkcs5padding(n int, p []byte) []byte {
 func pkcs5trimming(_ int, p []byte) []byte {
 	m := p[len(p)-1]
 	return p[:len(p)-int(m)]
+}
+
+func dstiv(n int, iv []byte) (int, []byte, []byte) {
+	if len(iv) == n && n > 0 {
+		return n, nil, iv
+	} else {
+		iv = Nonce(n)
+		return n, iv, iv
+	}
+}
+
+func ivcip(n int, iv []byte, cip []byte) (int, []byte, []byte) {
+	if len(iv) == n && n > 0 {
+		return n, iv, cip
+	} else {
+		return n, cip[:n], cip[n:]
+	}
 }

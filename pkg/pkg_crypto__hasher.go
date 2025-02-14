@@ -2,17 +2,16 @@ package pkg
 
 import (
 	"crypto"
+	"crypto/hkdf"
+	"crypto/pbkdf2"
 	"crypto/subtle"
 	"encoding"
 	"encoding/base64"
-	"io"
 	"slices"
 	"strconv"
 	"strings"
 
 	"golang.org/x/crypto/argon2"
-	"golang.org/x/crypto/hkdf"
-	"golang.org/x/crypto/pbkdf2"
 )
 
 type Hasher interface {
@@ -242,8 +241,7 @@ func (x *pbkdf2Args) Hash(plain []byte) ([]byte, error) {
 }
 
 func (x *pbkdf2Args) Tag(plain []byte) ([]byte, error) {
-	tag := pbkdf2.Key(plain, x.salt, x.iterations, x.tagLength, x.hash.New)
-	return tag, nil
+	return pbkdf2.Key(x.hash.New, string(plain), x.salt, x.iterations, x.tagLength)
 }
 
 func (x pbkdf2Args) MarshalText() ([]byte, error) {
@@ -363,11 +361,7 @@ func (x *hkdfArgs) Hash(plain []byte) ([]byte, error) {
 }
 
 func (x *hkdfArgs) Tag(plain []byte) ([]byte, error) {
-	tag := make([]byte, x.tagLength, x.tagLength)
-	if _, err := io.ReadFull(hkdf.New(x.hash.New, plain, x.salt, x.info), tag); err != nil {
-		return nil, err
-	}
-	return tag, nil
+	return hkdf.Key(x.hash.New, plain, x.salt, string(x.info), x.tagLength)
 }
 
 func (x hkdfArgs) MarshalText() ([]byte, error) {
