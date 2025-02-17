@@ -13,6 +13,7 @@ import (
 	"encoding"
 	"encoding/base64"
 	"encoding/json"
+	"encoding/pem"
 	"errors"
 	"math"
 	"math/big"
@@ -295,6 +296,7 @@ func (x JWK[T]) MarshalJSON() ([]byte, error) {
 
 func (x *JWK[T]) UnmarshalJSON(p []byte) error {
 	var (
+		ok       bool
 		v        jwk_field
 		ecdsaPub = func(crv string, x, y B64RawUrl) (pub *ecdsa.PublicKey, err error) {
 			c, ok := map[string]elliptic.Curve{
@@ -320,6 +322,9 @@ func (x *JWK[T]) UnmarshalJSON(p []byte) error {
 			return p.ECDH()
 		}
 	)
+	if p, ok = x.parsePEM(p); ok {
+		return x.UnmarshalBinary(p)
+	}
 	if err := json.Unmarshal(p, &v); err != nil {
 		return err
 	}
@@ -514,6 +519,7 @@ func (x *JWK[T]) UnmarshalBinary(p []byte) error {
 	var pub any
 	var ok bool
 	var err error
+	p, ok = x.parsePEM(p)
 
 	switch k := any(&x.Key).(type) {
 	default:
@@ -591,11 +597,13 @@ func (x JWK[T]) MarshalText() ([]byte, error) {
 }
 
 func (x *JWK[T]) UnmarshalText(p []byte) error {
-	if p, err := new(B64Std).z().DecodeString(string(p)); err != nil {
-		return err
-	} else {
-		return x.UnmarshalBinary(p)
+	if d, ok := x.parsePEM(p); !ok {
+		var err error
+		if p, err = new(B64Std).z().DecodeString(string(d)); err != nil {
+			return err
+		}
 	}
+	return x.UnmarshalBinary(p)
 }
 
 func (x JWK[T]) MarshalYAML() (any, error) {
@@ -607,11 +615,14 @@ func (x JWK[T]) MarshalYAML() (any, error) {
 }
 
 func (x *JWK[T]) UnmarshalYAML(v *yaml.Node) error {
-	if p, err := new(B64Std).z().DecodeString(v.Value); err != nil {
-		return err
-	} else {
-		return x.UnmarshalBinary(p)
+	var p = []byte(v.Value)
+	if d, ok := x.parsePEM(p); !ok {
+		var err error
+		if p, err = new(B64Std).z().DecodeString(string(d)); err != nil {
+			return err
+		}
 	}
+	return x.UnmarshalBinary(p)
 }
 
 func (x JWK[T]) Bytes() []byte {
@@ -642,6 +653,42 @@ func (x JWK[T]) Bytes() []byte {
 		return k.Bytes()
 	case []byte:
 		return k
+	}
+}
+
+func (x JWK[T]) parsePEM(p []byte) ([]byte, bool) {
+	var match = func(t ...string) ([]byte, bool) {
+		var q = make([]byte, len(p))
+		_ = copy(q, p)
+		for b := new(pem.Block); b != nil && len(t) > 0; {
+			b, q = pem.Decode(q)
+			for _, t := range t {
+				if b != nil && b.Type == t {
+					return b.Bytes, true
+				}
+			}
+		}
+		return p, false
+	}
+	switch any(x.Key).(type) {
+	default:
+		return match()
+	case *rsa.PrivateKey:
+		return match("RSA PRIVATE KEY", "PRIVATE KEY")
+	case *ecdsa.PrivateKey:
+		return match("EC PRIVATE KEY", "PRIVATE KEY")
+	case ed25519.PrivateKey:
+		return match("PRIVATE KEY")
+	case *ecdh.PrivateKey:
+		return match("EC PRIVATE KEY", "PRIVATE KEY")
+	case *rsa.PublicKey:
+		return match("RSA PUBLIC KEY", "PUBLIC KEY")
+	case *ecdsa.PublicKey:
+		return match("EC PUBLIC KEY", "PUBLIC KEY")
+	case ed25519.PublicKey:
+		return match("PUBLIC KEY")
+	case *ecdh.PublicKey:
+		return match("EC PUBLIC KEY", "PUBLIC KEY")
 	}
 }
 
@@ -768,6 +815,8 @@ func (x B64RawUrl) MarshalJSON() ([]byte, error) { return []byte(`"` + x.String(
 
 func (x B64RawUrl) MarshalYAML() (any, error) { return x.String(), nil }
 
+func (x *B64RawUrl) UnmarshalYAML(v *yaml.Node) error { return x.UnmarshalText([]byte(v.Value)) }
+
 func (x *B64RawUrl) UnmarshalJSON(p []byte) error {
 	err := error(ErrUnimplemented)
 	if l := len(p); l > 2 && p[0] == '"' && p[l-1] == '"' {
@@ -795,6 +844,8 @@ func (x B64Std) String() string { return x.z().EncodeToString(x) }
 func (x B64Std) MarshalJSON() ([]byte, error) { return []byte(`"` + x.String() + `"`), nil }
 
 func (x B64Std) MarshalYAML() (any, error) { return x.String(), nil }
+
+func (x *B64Std) UnmarshalYAML(v *yaml.Node) error { return x.UnmarshalText([]byte(v.Value)) }
 
 func (x *B64Std) UnmarshalJSON(p []byte) error {
 	err := error(ErrUnimplemented)

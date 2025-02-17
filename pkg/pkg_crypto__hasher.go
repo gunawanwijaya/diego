@@ -14,11 +14,15 @@ import (
 	"golang.org/x/crypto/argon2"
 )
 
+type Tagger interface {
+	Tag(plain []byte) ([]byte, error)
+	Validator
+}
+
 type Hasher interface {
 	Compare(plain []byte, hash []byte) error
 	Hash(plain []byte) ([]byte, error)
-	Tag(plain []byte) ([]byte, error)
-	Validator
+	Tagger
 }
 
 var _ Hasher = NopHasher{}
