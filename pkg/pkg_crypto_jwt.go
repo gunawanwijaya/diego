@@ -4,7 +4,7 @@ import (
 	"bytes"
 	"crypto"
 	"encoding/json"
-
+	"slices"
 	"time"
 )
 
@@ -234,11 +234,9 @@ func (JWT) WithSubject(sub string) func(c JWTClaims) error {
 
 func (JWT) WithAudience(aud ...string) func(c JWTClaims) error {
 	return func(c JWTClaims) error {
-		for _, v1 := range aud {
-			for _, v2 := range c.Audience() {
-				if v1 == v2 {
-					return nil
-				}
+		for _, v := range aud {
+			if slices.Contains(c.Audience(), v) {
+				return nil
 			}
 		}
 		return ErrorStr("invalid aud")
@@ -247,7 +245,7 @@ func (JWT) WithAudience(aud ...string) func(c JWTClaims) error {
 
 func (JWT) WithExpiresAt(exp time.Time) func(c JWTClaims) error {
 	return func(c JWTClaims) error {
-		if c.ExpiresAt().IsZero() || c.ExpiresAt().After(exp) {
+		if !c.ExpiresAt().IsZero() && exp.After(c.ExpiresAt()) {
 			return ErrorStr("invalid exp")
 		}
 		return nil
@@ -256,7 +254,7 @@ func (JWT) WithExpiresAt(exp time.Time) func(c JWTClaims) error {
 
 func (JWT) WithNotBefore(nbf time.Time) func(c JWTClaims) error {
 	return func(c JWTClaims) error {
-		if c.NotBefore().IsZero() || c.NotBefore().Before(nbf) {
+		if !c.NotBefore().IsZero() && nbf.Before(c.NotBefore()) {
 			return ErrorStr("invalid nbf")
 		}
 		return nil
@@ -265,7 +263,7 @@ func (JWT) WithNotBefore(nbf time.Time) func(c JWTClaims) error {
 
 func (JWT) WithIssuedAt(iat time.Time) func(c JWTClaims) error {
 	return func(c JWTClaims) error {
-		if c.IssuedAt().IsZero() || c.IssuedAt().Before(iat) {
+		if !c.IssuedAt().IsZero() && iat.Before(c.IssuedAt()) {
 			return ErrorStr("invalid iat")
 		}
 		return nil
