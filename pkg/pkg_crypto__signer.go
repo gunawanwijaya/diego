@@ -252,28 +252,38 @@ func (x ed25519Args) Sign(msg []byte) ([]byte, error) {
 	if len(x.key) != ed25519.PrivateKeySize {
 		return nil, ErrorStr("invalid key")
 	}
-	if x.opts != nil && x.opts.Hash == crypto.SHA512 {
-		msg = Digest(x.opts.Hash, msg)
-		return x.key.Sign(rand.Reader, msg, x.opts)
+	if x.opts == nil {
+		return ed25519.Sign(x.key, msg), nil
 	}
-	return ed25519.Sign(x.key, msg), nil
+	if x.opts.Hash == crypto.SHA512 {
+		msg = Digest(x.opts.Hash, msg)
+	} else {
+		x.opts.Hash = 0
+	}
+	return x.key.Sign(rand.Reader, msg, x.opts)
 }
 
 func (x ed25519Args) Verify(msg []byte, sig []byte) error {
 	if len(x.pub) != ed25519.PublicKeySize {
-		return ErrorStr("invalid key")
+		if len(x.key) != ed25519.PrivateKeySize {
+			return ErrorStr("invalid key")
+		}
+		var ok bool
+		if x.pub, ok = x.key.Public().(ed25519.PublicKey); !ok {
+			return ErrorStr("invalid key")
+		}
 	} else if len(sig) != ed25519.SignatureSize {
 		return ErrorStr("invalid sig")
 	}
-	if x.opts != nil && x.opts.Hash == crypto.SHA512 {
+	if x.opts == nil {
+		return map[bool]error{false: ErrorStr("invalid sig")}[ed25519.Verify(x.pub, msg, sig)]
+	}
+	if x.opts.Hash == crypto.SHA512 {
 		msg = Digest(x.opts.Hash, msg)
-		return ed25519.VerifyWithOptions(x.pub, msg, sig, x.opts)
+	} else {
+		x.opts.Hash = 0
 	}
-	if !ed25519.Verify(x.pub, msg, sig) {
-		return ErrorStr("invalid sig")
-	}
-	return nil
-
+	return ed25519.VerifyWithOptions(x.pub, msg, sig, x.opts)
 }
 
 func (x ed25519Args) Validate() error {
