@@ -110,7 +110,7 @@ func (x *authentication) Authenticate(ctx context.Context, req AuthenticateReque
 		// 2 factor authentication is required if setup
 		// -----------------------------------------------------------------------------------------------------------------
 		if sec := res1.TOTPSecret.Unmask(); len(sec) > 0 {
-			if len(req.TOTP) < 0 {
+			if len(req.TOTP) <= 0 {
 				return ErrRequiredTOTP
 				// } else if !gotp.NewDefaultTOTP(sec).VerifyTime(req.TOTP, time.Now()) {
 				// 	return ErrInvalidCredentials

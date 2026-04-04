@@ -59,7 +59,7 @@ func (x *datastore) Validate() (err error) {
 	return nil
 }
 
-func a() {
+func _() {
 	gw, _ := gzip.NewWriterLevel(nil, gzip.BestCompression)
 	_ = gw
 }
