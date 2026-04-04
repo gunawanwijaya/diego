@@ -32,6 +32,15 @@ func Errorf(format string, a ...any) error { return fmt.Errorf(format, a...) }
 // Sprintf formats according to a format specifier and returns the resulting string.
 func Sprintf(format string, a ...any) string { return fmt.Sprintf(format, a...) }
 
+// Stringer is implemented by any value that has a String method,
+// which defines the “native” format for that value.
+// The String method is used to print values passed as an operand
+// to any format that accepts a string or to an unformatted printer
+// such as [Print].
+type Stringer interface {
+	String() string
+}
+
 // Validator is a generic trait that any data type need to implement in order to be able to validate in runtime
 type Validator interface{ Validate() error }
 
@@ -44,6 +53,13 @@ func Validate[T Validator](t T) (T, error) {
 		return *new(T), err
 	}
 	return t, nil
+}
+func Ptr[T any](v T) *T { return &v }
+func Val[T any](p *T) T {
+	if p == nil {
+		return *new(T)
+	}
+	return *p
 }
 
 // Must will panic only if err is not nil

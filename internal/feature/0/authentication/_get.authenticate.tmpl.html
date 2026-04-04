@@ -1,0 +1,9 @@
+<form>
+    <input name="username" type="text"/>
+    <input name="password" type="password"/>
+    <input name="csrf" type="hidden" value="{{ .get_authenticate_csrf }}"/>
+    <button type="submit"
+        formmethod="post"
+        formaction="{{ .get_authenticate_action }}"
+    >{{ .get_authenticate_submit }}</button>
+</form>

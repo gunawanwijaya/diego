@@ -47,7 +47,11 @@ func (x *Ratchet) Send(msg []byte) ([]byte, error) {
 	if err != nil {
 		return nil, err
 	}
-	cip, err := AES_CBC_IV(key, iv).Encrypt(msg)
+	c, err := AES.CBC(key, iv)
+	if err != nil {
+		return nil, err
+	}
+	cip, err := c.Encrypt(msg)
 	if err != nil {
 		return nil, err
 	}
@@ -71,7 +75,11 @@ func (x *Ratchet) Recv(cip []byte) ([]byte, error) {
 	if err != nil {
 		return nil, err
 	}
-	msg, err := AES_CBC_IV(key, iv).Decrypt(cip[32:])
+	c, err := AES.CBC(key, iv)
+	if err != nil {
+		return nil, err
+	}
+	msg, err := c.Decrypt(cip[32:])
 	if err != nil {
 		return nil, err
 	}

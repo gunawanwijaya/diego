@@ -23,3 +23,12 @@ go.work.sum
 
 # env file
 .env
+
+**/*secret*
+**/*.aar
+**/*.jar
+**/*.gz
+
+**/*.pem
+**/*.key
+**/*.crt

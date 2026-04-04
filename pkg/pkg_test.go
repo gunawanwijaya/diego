@@ -1,31 +1,96 @@
 package pkg_test
 
 import (
+	"bytes"
 	"crypto"
-	"crypto/ecdh"
-	"crypto/ecdsa"
-	"crypto/ed25519"
+
 	"crypto/elliptic"
 	"crypto/rand"
-	"crypto/rsa"
+	"crypto/x509"
 	"encoding/json"
+	"encoding/pem"
+	"io"
+	"maps"
+	"os"
 	"testing"
 	"time"
 
 	"github.com/gunawanwijaya/diego/pkg"
 	"github.com/stretchr/testify/require"
-	"golang.org/x/crypto/nacl/box"
-	"golang.org/x/crypto/nacl/sign"
 	"gopkg.in/yaml.v3"
 )
 
+func TestCertificate(t *testing.T) {
+	{
+		f := pkg.Must1(os.Open("./ec_private.key"))
+		defer f.Close()
+		s := pkg.Must1(f.Stat())
+		n := int(s.Size())
+		p := make([]byte, n)
+		require.Equal(t, n, pkg.Must1(f.Read(p)))
+
+		var key pkg.JWK[*pkg.ECDSAPrivateKey]
+		pkg.Must(key.UnmarshalBinary(p))
+	}
+
+	{
+		f := pkg.Must1(os.Open("./my.key"))
+		n := int(pkg.Must1(f.Stat()).Size())
+		p := make([]byte, n)
+		require.Equal(t, n, pkg.Must1(f.Read(p)))
+		f.Close()
+
+		var jwk = new(pkg.JWK[*pkg.ECDSAPrivateKey])
+		pkg.Must(jwk.UnmarshalText(p))
+		var key = jwk.Key
+
+		f = pkg.Must1(os.Open("./my.crt"))
+		n = int(pkg.Must1(f.Stat()).Size())
+		p = make([]byte, n)
+		require.Equal(t, n, pkg.Must1(f.Read(p)))
+		f.Close()
+
+		var q = make([]byte, len(p))
+		_ = copy(q, p)
+		var match = func(t string) []byte {
+			var o []byte
+			for b := new(pem.Block); b != nil; {
+				b, q = pem.Decode(q)
+				if b != nil && b.Type == t {
+					o = append(o, b.Bytes...)
+				}
+			}
+			if len(o) > 0 {
+				return o
+			} else {
+				return p
+			}
+		}
+
+		crts := pkg.Must1(x509.ParseCertificates(match("CERTIFICATE")))
+		require.Equal(t, 1, len(crts))
+		var crt *x509.Certificate = crts[0]
+		require.True(t, key.PublicKey.Equal(crt.PublicKey))
+		jwk = jwk.WithX5C(crts...)
+		// t.Log(pkg.B64RawUrl(jwk.X5T()))
+		// t.Log(pkg.B64RawUrl(jwk.X5TS256()))
+
+		var pool = x509.NewCertPool()
+		pool.AddCert(crt)
+		chains := pkg.Must1(crt.Verify(x509.VerifyOptions{Roots: pool}))
+		require.Equal(t, 1, len(chains))
+		require.Equal(t, 1, len(chains[0]))
+		require.Equal(t, crt, chains[0][0])
+	}
+}
+
 func TestRatchet(t *testing.T) {
 	var a, b = new(pkg.RatchetA), new(pkg.RatchetB)
-	a.IdentityKey = pkg.Must1(ecdh.X25519().GenerateKey(rand.Reader))
-	a.EphemeralKey = pkg.Must1(ecdh.X25519().GenerateKey(rand.Reader))
-	b.IdentityKey = pkg.Must1(ecdh.X25519().GenerateKey(rand.Reader))
-	b.SignedPreKey = pkg.Must1(ecdh.X25519().GenerateKey(rand.Reader))
-	b.OneTimePreKey = pkg.Must1(ecdh.X25519().GenerateKey(rand.Reader))
+	a.IdentityKey = pkg.Must1(pkg.Curve.X25519().GenerateKey(rand.Reader))
+	a.EphemeralKey = pkg.Must1(pkg.Curve.X25519().GenerateKey(rand.Reader))
+	b.IdentityKey = pkg.Must1(pkg.Curve.X25519().GenerateKey(rand.Reader))
+	b.SignedPreKey = pkg.Must1(pkg.Curve.X25519().GenerateKey(rand.Reader))
+	b.OneTimePreKey = pkg.Must1(pkg.Curve.X25519().GenerateKey(rand.Reader))
 	pkg.Must(a.X3DH(b.IdentityKey.PublicKey(), b.SignedPreKey.PublicKey(), b.OneTimePreKey.PublicKey()))
 	pkg.Must(b.X3DH(a.IdentityKey.PublicKey(), a.EphemeralKey.PublicKey()))
 
@@ -66,40 +131,46 @@ func TestCrypto__Cipher(t *testing.T) {
 	l := 32
 	key32 := pkg.Nonce(l)
 	msg := []byte("good day")
+	iv := pkg.Nonce(16)
 
-	c := pkg.Must1(pkg.Validate(pkg.AES_CBC(key32)))
+	c := pkg.Must1(pkg.AES.CBC(key32, iv))
+	pkg.Must(c.Validate())
 	cip := pkg.Must1(c.Encrypt(msg))
 	dec := pkg.Must1(c.Decrypt(cip))
 	require.Equal(t, msg, dec)
 
 	{
-		c := pkg.Must1(pkg.Validate(pkg.AES_CBC_IV(key32, pkg.Nonce(16))))
-		cip := pkg.Must1(c.Encrypt(msg))
-		dec := pkg.Must1(c.Decrypt(cip))
+		buf := new(bytes.Buffer)
+		cs := pkg.Must1(pkg.AES.CTR(key32, iv, buf, buf))
+		pkg.Must(cs.Validate())
+		cip = pkg.Must1(cs.Encrypt(msg))
+		dec = pkg.Must1(cs.Decrypt(cip))
+		require.Equal(t, msg, dec)
+		pkg.Must1(cs.Write(msg))
+		dec = pkg.Must1(io.ReadAll(cs))
 		require.Equal(t, msg, dec)
 	}
 
-	c = pkg.Must1(pkg.Validate(pkg.AES_CTR(key32)))
+	c = pkg.Must1(pkg.AES.GCM(key32, iv, nil))
+	pkg.Must(c.Validate())
 	cip = pkg.Must1(c.Encrypt(msg))
 	dec = pkg.Must1(c.Decrypt(cip))
 	require.Equal(t, msg, dec)
 
-	c = pkg.Must1(pkg.Validate(pkg.AES_GCM(key32)))
+	c = pkg.Must1(pkg.ChaCha20Poly1305(key32, iv, nil))
+	pkg.Must(c.Validate())
 	cip = pkg.Must1(c.Encrypt(msg))
 	dec = pkg.Must1(c.Decrypt(cip))
 	require.Equal(t, msg, dec)
 
-	c = pkg.Must1(pkg.Validate(pkg.ChaCha20Poly1305(key32)))
+	c = pkg.Must1(pkg.XChaCha20Poly1305(key32, iv, nil))
+	pkg.Must(c.Validate())
 	cip = pkg.Must1(c.Encrypt(msg))
 	dec = pkg.Must1(c.Decrypt(cip))
 	require.Equal(t, msg, dec)
 
-	c = pkg.Must1(pkg.Validate(pkg.XChaCha20Poly1305(key32)))
-	cip = pkg.Must1(c.Encrypt(msg))
-	dec = pkg.Must1(c.Decrypt(cip))
-	require.Equal(t, msg, dec)
-
-	c = pkg.Must1(pkg.Validate(pkg.NaClBox(pkg.Must2(box.GenerateKey(rand.Reader)))))
+	c = pkg.Must1(pkg.Validate(pkg.NaCl.Box(pkg.Must2(pkg.NaCl.GenerateBoxKey()))))
+	pkg.Must(c.Validate())
 	cip = pkg.Must1(c.Encrypt(msg))
 	dec = pkg.Must1(c.Decrypt(cip))
 	require.Equal(t, msg, dec)
@@ -146,189 +217,173 @@ func TestCrypto__Hasher(t *testing.T) {
 }
 
 func TestCrypto__Signer(t *testing.T) {
-	key1024 := pkg.Must1(rsa.GenerateKey(rand.Reader, 1024))
-	key2048 := pkg.Must1(rsa.GenerateKey(rand.Reader, 2048))
-	keyP256 := pkg.Must1(ecdsa.GenerateKey(elliptic.P256(), rand.Reader))
+	key2048 := pkg.Must1(pkg.RSA.GenerateKey(rand.Reader, 2048))
+	keyP256 := pkg.Must1(pkg.ECDSA.GenerateKey(elliptic.P256(), rand.Reader))
 
 	msg := []byte("good day")
 
 	{
 		k := pkg.Nonce(64)
-		s := pkg.Must1(pkg.Validate(pkg.HMAC(crypto.SHA256, k)))
+		s := pkg.Must1(pkg.Validate(pkg.HMAC.Signer(crypto.SHA256, k)))
 		sig := pkg.Must1(s.Sign(msg))
 		pkg.Must(s.Verify(msg, sig))
 	}
 	{
-		s := pkg.Must1(pkg.Validate(pkg.PSS(key2048, crypto.SHA384, nil)))
-		v := pkg.Must1(pkg.Validate(pkg.PSSVerify(&key2048.PublicKey, crypto.SHA384, nil)))
+		s := pkg.Must1(pkg.Validate(pkg.RSA.PSS.Signer(key2048, crypto.SHA384, nil)))
+		v := pkg.Must1(pkg.Validate(pkg.RSA.PSS.Verifier(&key2048.PublicKey, crypto.SHA384, nil)))
 		sig := pkg.Must1(s.Sign(msg))
 		pkg.Must(v.Verify(msg, sig))
 	}
 	{
-		s := pkg.Must1(pkg.Validate(pkg.PSS(key2048, crypto.SHA256, nil)))
-		v := pkg.Must1(pkg.Validate(pkg.PSSVerify(&key2048.PublicKey, crypto.SHA256, nil)))
+		s := pkg.Must1(pkg.Validate(pkg.RSA.PSS.Signer(key2048, crypto.SHA256, nil)))
+		v := pkg.Must1(pkg.Validate(pkg.RSA.PSS.Verifier(&key2048.PublicKey, crypto.SHA256, nil)))
 		sig := pkg.Must1(s.Sign(msg))
 		pkg.Must(v.Verify(msg, sig))
 	}
 	{
-		s := pkg.Must1(pkg.Validate(pkg.PSS(key1024, crypto.SHA384, nil)))
-		v := pkg.Must1(pkg.Validate(pkg.PSSVerify(&key1024.PublicKey, crypto.SHA384, nil)))
+		s := pkg.Must1(pkg.Validate(pkg.RSA.PSS.Signer(key2048, crypto.SHA512_256, nil)))
+		v := pkg.Must1(pkg.Validate(pkg.RSA.PSS.Verifier(&key2048.PublicKey, crypto.SHA512_256, nil)))
 		sig := pkg.Must1(s.Sign(msg))
 		pkg.Must(v.Verify(msg, sig))
 	}
 	{
-		s := pkg.Must1(pkg.Validate(pkg.PSS(key2048, crypto.SHA512_256, nil)))
-		v := pkg.Must1(pkg.Validate(pkg.PSSVerify(&key2048.PublicKey, crypto.SHA512_256, nil)))
+		s := pkg.Must1(pkg.Validate(pkg.RSA.PKCS1v15.Signer(key2048, crypto.SHA256)))
+		v := pkg.Must1(pkg.Validate(pkg.RSA.PKCS1v15.Verifier(&key2048.PublicKey, crypto.SHA256)))
 		sig := pkg.Must1(s.Sign(msg))
 		pkg.Must(v.Verify(msg, sig))
 	}
 	{
-		s := pkg.Must1(pkg.Validate(pkg.PKCS1v15(key1024, crypto.SHA512)))
-		v := pkg.Must1(pkg.Validate(pkg.PKCS1v15EncryptVerify(&key1024.PublicKey, crypto.SHA512)))
+		s := pkg.Must1(pkg.Validate(pkg.RSA.PKCS1v15.Signer(key2048, crypto.SHA512)))
+		v := pkg.Must1(pkg.Validate(pkg.RSA.PKCS1v15.Verifier(&key2048.PublicKey, crypto.SHA512)))
 		sig := pkg.Must1(s.Sign(msg))
 		pkg.Must(v.Verify(msg, sig))
 	}
 	{
-		s := pkg.Must1(pkg.Validate(pkg.PKCS1v15(key2048, crypto.SHA256)))
-		v := pkg.Must1(pkg.Validate(pkg.PKCS1v15EncryptVerify(&key2048.PublicKey, crypto.SHA256)))
+		s := pkg.Must1(pkg.Validate(pkg.ECDSA.Signer(keyP256, false)))
+		v := pkg.Must1(pkg.Validate(pkg.ECDSA.Verifier(&keyP256.PublicKey, false)))
 		sig := pkg.Must1(s.Sign(msg))
 		pkg.Must(v.Verify(msg, sig))
 	}
 	{
-		s := pkg.Must1(pkg.Validate(pkg.PKCS1v15(key1024, crypto.SHA384)))
-		v := pkg.Must1(pkg.Validate(pkg.PKCS1v15EncryptVerify(&key1024.PublicKey, crypto.SHA384)))
+		s := pkg.Must1(pkg.Validate(pkg.ECDSA.Signer(keyP256, true)))
+		v := pkg.Must1(pkg.Validate(pkg.ECDSA.Verifier(&keyP256.PublicKey, true)))
 		sig := pkg.Must1(s.Sign(msg))
 		pkg.Must(v.Verify(msg, sig))
 	}
 	{
-		s := pkg.Must1(pkg.Validate(pkg.PKCS1v15(key2048, crypto.SHA512)))
-		v := pkg.Must1(pkg.Validate(pkg.PKCS1v15EncryptVerify(&key2048.PublicKey, crypto.SHA512)))
+		pub, key := pkg.Must2(pkg.Ed25519.GenerateKey(rand.Reader))
+		s := pkg.Must1(pkg.Validate(pkg.Ed25519.Signer(pub, key, nil)))
+		v := pkg.Must1(pkg.Validate(pkg.Ed25519.Verifier(pub, nil)))
 		sig := pkg.Must1(s.Sign(msg))
 		pkg.Must(v.Verify(msg, sig))
+		// t.Logf("[%d] [%d]", len(pub), len(key))
 	}
 	{
-		s := pkg.Must1(pkg.Validate(pkg.ECDSASign(keyP256, false)))
-		v := pkg.Must1(pkg.Validate(pkg.ECDSAVerify(&keyP256.PublicKey, false)))
+		pub, key := pkg.Must2(pkg.NaCl.GenerateSignKey())
+		s := pkg.Must1(pkg.Validate(pkg.NaCl.Signer(pub, key)))
+		v := pkg.Must1(pkg.Validate(pkg.NaCl.Verifier(pub)))
 		sig := pkg.Must1(s.Sign(msg))
 		pkg.Must(v.Verify(msg, sig))
-	}
-	{
-		s := pkg.Must1(pkg.Validate(pkg.ECDSASign(keyP256, true)))
-		v := pkg.Must1(pkg.Validate(pkg.ECDSAVerify(&keyP256.PublicKey, true)))
-		sig := pkg.Must1(s.Sign(msg))
-		pkg.Must(v.Verify(msg, sig))
-	}
-	{
-		pub, key := pkg.Must2(ed25519.GenerateKey(rand.Reader))
-		s := pkg.Must1(pkg.Validate(pkg.Ed25519Sign(pub, key, nil)))
-		v := pkg.Must1(pkg.Validate(pkg.Ed25519Verify(pub, nil)))
-		sig := pkg.Must1(s.Sign(msg))
-		pkg.Must(v.Verify(msg, sig))
-	}
-	{
-		pub, key := pkg.Must2(sign.GenerateKey(rand.Reader))
-		s := pkg.Must1(pkg.Validate(pkg.NaClSign(pub, key)))
-		v := pkg.Must1(pkg.Validate(pkg.NaClVerify(pub)))
-		sig := pkg.Must1(s.Sign(msg))
-		pkg.Must(v.Verify(msg, sig))
+
+		var pub0 pkg.Ed25519PublicKey = pub[:]
+		var key0 pkg.Ed25519PrivateKey = key[:]
+		s0 := pkg.Must1(pkg.Validate(pkg.Ed25519.Signer(pub0, key0, nil)))
+		v0 := pkg.Must1(pkg.Validate(pkg.Ed25519.Verifier(pub0, nil)))
+		n := pkg.Ed25519.SignatureSize()
+		sig0 := pkg.Must1(s0.Sign(msg))
+		require.Equal(t, len(sig[:n]), len(sig0))
+		require.Equal(t, sig[:n], pkg.Must1(s0.Sign(msg)))
+		pkg.Must(v0.Verify(msg, sig[:n]))
 	}
 }
 
 func TestCrypto_JWT(t *testing.T) {
-	key2048 := pkg.Must1(rsa.GenerateKey(rand.Reader, 2048))
-	keyP256 := pkg.Must1(ecdsa.GenerateKey(elliptic.P256(), rand.Reader))
+	ts := time.Unix(1516239022, 0)
+	tsBefore, tsAfter := ts.Add(-time.Hour), ts.Add(time.Hour)
+
 	claims := make(pkg.JWTClaims).
-		WithIssuer("1234567890").
+		// WithIssuer("1234567890").
 		WithSubject("1234567890").
 		WithAudience("1234567890").
-		WithExpiresAt(time.Unix(1516239022, 0)).
-		WithNotBefore(time.Unix(1516239022, 0)).
-		WithIssuedAt(time.Unix(1516239022, 0)).
+		WithIssuedAt(ts).
+		WithNotBefore(tsBefore).
+		WithExpiresAt(tsAfter).
 		WithID("1234567890").
 		With("name", "John Doe")
-	{
-		h := pkg.HMAC(crypto.SHA256, []byte("your-256-bit-secret"))
-		jwt := pkg.Must1(claims.Sign(h))
-		q := pkg.Must1(jwt.Verify(h))
-		require.Equal(t, "1234567890", q.Subject())
-		require.Equal(t, int64(1516239022), q.IssuedAt().Unix())
-		var name string
-		pkg.Must(q.Decode("name", &name))
-		require.Equal(t, "John Doe", name)
-		var str = jwt.String()
-		// t.Log(jwt.String())
 
-		qq, err := jwt.Verify(h, jwt.WithIssuer("abc"))
+	checkIntegrity := func(jwt *pkg.JWT, claims pkg.JWTClaims, s pkg.Signer) {
+		q := pkg.Must1(jwt.Verify(s))
+		// require.Equal(t, claims.Issuer(), q.Issuer())
+		require.Equal(t, claims.Subject(), q.Subject())
+		require.Equal(t, claims.Audience(), q.Audience())
+		require.Equal(t, claims.IssuedAt().Unix(), q.IssuedAt().Unix())
+		require.Equal(t, claims.NotBefore().Unix(), q.NotBefore().Unix())
+		require.Equal(t, claims.ExpiresAt().Unix(), q.ExpiresAt().Unix())
+		require.Equal(t, claims.ID(), q.ID())
+		var qName, cName string
+		pkg.Must(claims.Decode("name", &cName))
+		pkg.Must(q.Decode("name", &qName))
+		require.Equal(t, cName, qName)
+
+		qq, err := jwt.Verify(s, jwt.CheckIssuer("abc"))
 		require.Error(t, err)
 		require.Nil(t, qq)
 
-		qq, err = jwt.Verify(h, jwt.WithSubject("abc"))
+		qq, err = jwt.Verify(s, jwt.CheckSubject("abc"))
 		require.Error(t, err)
 		require.Nil(t, qq)
 
-		qq, err = jwt.Verify(h, jwt.WithAudience("abc"))
+		qq, err = jwt.Verify(s, jwt.CheckAudience("abc"))
 		require.Error(t, err)
 		require.Nil(t, qq)
 
-		qq, err = jwt.Verify(h, jwt.WithExpiresAt(time.Unix(1316239022, 0)))
+		qq, err = jwt.Verify(s, jwt.CheckExpiresAt(tsAfter.Add(time.Hour)))
 		require.Error(t, err)
 		require.Nil(t, qq)
 
-		qq, err = jwt.Verify(h, jwt.WithNotBefore(time.Unix(1716239022, 0)))
+		qq, err = jwt.Verify(s, jwt.CheckNotBefore(tsBefore.Add(-time.Hour)))
 		require.Error(t, err)
 		require.Nil(t, qq)
 
-		qq, err = jwt.Verify(h, jwt.WithIssuedAt(time.Unix(1716239022, 0)))
+		qq, err = jwt.Verify(s, jwt.CheckIssuedAt(ts.Add(-time.Hour)))
 		require.Error(t, err)
 		require.Nil(t, qq)
 
-		qq, err = jwt.Verify(h, jwt.WithID("abc"))
+		qq, err = jwt.Verify(s, jwt.CheckID("abc"))
 		require.Error(t, err)
 		require.Nil(t, qq)
-
-		jwt = new(pkg.JWT)
-		pkg.Must(jwt.UnmarshalText([]byte(str)))
-		qq = pkg.Must1(jwt.Verify(h))
-		pkg.Must(qq.Decode("name", &name))
-		require.Equal(t, "John Doe", name)
-		require.Equal(t, "1234567890", qq.Subject())
-		require.Equal(t, int64(1516239022), qq.IssuedAt().Unix())
-
-	}
-	{
-		r := pkg.ECDSASign(keyP256, false)
-		jwt := pkg.Must1(claims.Sign(r))
-		q := pkg.Must1(jwt.Verify(r))
-		require.Equal(t, "1234567890", q.Subject())
-		require.Equal(t, int64(1516239022), q.IssuedAt().Unix())
-		var name string
-		pkg.Must(q.Decode("name", &name))
-		require.Equal(t, "John Doe", name)
-		// t.Log(jwt.String())
-	}
-	{
-		r := pkg.PKCS1v15(key2048, crypto.SHA256)
-		jwt := pkg.Must1(claims.Sign(r))
-		q := pkg.Must1(jwt.Verify(r))
-		require.Equal(t, "1234567890", q.Subject())
-		require.Equal(t, int64(1516239022), q.IssuedAt().Unix())
-		var name string
-		pkg.Must(q.Decode("name", &name))
-		require.Equal(t, "John Doe", name)
-		// t.Log(jwt.String())
-	}
-	{
-		r := pkg.PSS(key2048, crypto.SHA256, nil)
-		jwt := pkg.Must1(claims.Sign(r))
-		q := pkg.Must1(jwt.Verify(r))
-		require.Equal(t, "1234567890", q.Subject())
-		require.Equal(t, int64(1516239022), q.IssuedAt().Unix())
-		var name string
-		pkg.Must(q.Decode("name", &name))
-		require.Equal(t, "John Doe", name)
-		// t.Log(jwt.String())
 	}
 
+	key2048 := pkg.Must1(pkg.RSA.GenerateKey(rand.Reader, 2048))
+	keyP256 := pkg.Must1(pkg.ECDSA.GenerateKey(elliptic.P256(), rand.Reader))
+	edPub, edKey := pkg.Must2(pkg.Ed25519.GenerateKey(rand.Reader))
+	// t.Logf("edPub: %s\n", pkg.Must1(pkg.NewJWK(edPub).MarshalJSON()))
+	// t.Logf("edKey: %s\n", pkg.Must1(pkg.NewJWK(edKey).MarshalJSON()))
+	const (
+		hs256 uint = iota
+		es256
+		rs256
+		ps256
+		ed25519
+	)
+	signerMap := map[uint]pkg.Signer{
+		hs256:   pkg.HMAC.Signer(crypto.SHA256, pkg.Nonce(32)),
+		es256:   pkg.ECDSA.Signer(keyP256, false),
+		rs256:   pkg.RSA.PKCS1v15.Signer(key2048, crypto.SHA256),
+		ps256:   pkg.RSA.PSS.Signer(key2048, crypto.SHA256, nil),
+		ed25519: pkg.Ed25519.Signer(edPub, edKey, nil),
+	}
+
+	for kid, s := range signerMap {
+		claims := maps.Clone(claims).With("kid", kid)
+		jwt := pkg.Must1(claims.Sign(s))
+		checkIntegrity(jwt, claims, s)
+
+		// t.Log(kid, jwt.String())
+		newJwt := new(pkg.JWT)
+		pkg.Must(newJwt.UnmarshalText([]byte(jwt.String())))
+		checkIntegrity(newJwt, claims, s)
+	}
 }
 
 func TestCrypto_JWK(t *testing.T) {
@@ -338,14 +393,14 @@ func TestCrypto_JWK(t *testing.T) {
 
 	{
 		key := pkg.Nonce(32)
-		pub1, key1 := pkg.Must2(ed25519.GenerateKey(rand.Reader))
-		key2 := pkg.Must1(ecdh.X25519().GenerateKey(rand.Reader))
+		pub1, key1 := pkg.Must2(pkg.Ed25519.GenerateKey(rand.Reader))
+		key2 := pkg.Must1(pkg.Curve.X25519().GenerateKey(rand.Reader))
 		pub2 := key2.PublicKey()
-		key3 := pkg.Must1(ecdh.P521().GenerateKey(rand.Reader))
+		key3 := pkg.Must1(pkg.Curve.P521().GenerateKey(rand.Reader))
 		pub3 := key3.PublicKey()
-		key4 := pkg.Must1(ecdsa.GenerateKey(elliptic.P521(), rand.Reader))
+		key4 := pkg.Must1(pkg.ECDSA.GenerateKey(elliptic.P521(), rand.Reader))
 		pub4 := &key4.PublicKey
-		key5 := pkg.Must1(rsa.GenerateKey(rand.Reader, bits))
+		key5 := pkg.Must1(pkg.RSA.GenerateKey(rand.Reader, bits))
 		pub5 := &key5.PublicKey
 
 		jwks := pkg.JWKS{
@@ -378,150 +433,127 @@ func TestCrypto_JWK(t *testing.T) {
 	}
 
 	{
-		pub_, prv_ := pkg.Must2(ed25519.GenerateKey(rand.Reader))
+		pub_, prv_ := pkg.Must2(pkg.Ed25519.GenerateKey(rand.Reader))
 		pub, prv := pkg.NewJWK(pub_), pkg.NewJWK(prv_)
 
-		prvTmp := pkg.NewJWK(ed25519.PrivateKey(nil))
+		prvTmp := pkg.NewJWK(pkg.Ed25519PrivateKey(nil))
 		pkg.Must(json.Unmarshal(pkg.Must1(json.Marshal(prv)), &prvTmp))
 		require.Equal(t, prv.Key, prvTmp.Key, "prv=(%s) prvTmp=(%s)", prv.Key, prvTmp.Key)
-		prvTmp = pkg.NewJWK(ed25519.PrivateKey(nil))
+		prvTmp = pkg.NewJWK(pkg.Ed25519PrivateKey(nil))
 		pkg.Must(yaml.Unmarshal(pkg.Must1(yaml.Marshal(prv)), &prvTmp))
 		require.Equal(t, prv.Key, prvTmp.Key, "prv=(%s) prvTmp=(%s)", prv.Key, prvTmp.Key)
-		prvTmp = pkg.NewJWK(ed25519.PrivateKey(nil))
+		prvTmp = pkg.NewJWK(pkg.Ed25519PrivateKey(nil))
 		pkg.Must(prvTmp.UnmarshalBinary(pkg.Must1(prv.MarshalBinary())))
 		require.Equal(t, prv.Key, prvTmp.Key, "prv=(%s) prvTmp=(%s)", prv.Key, prvTmp.Key)
 
-		pubTmp := pkg.NewJWK(ed25519.PublicKey(nil))
+		pubTmp := pkg.NewJWK(pkg.Ed25519PublicKey(nil))
 		pkg.Must(json.Unmarshal(pkg.Must1(json.Marshal(pub)), &pubTmp))
 		require.Equal(t, pub.Key, pubTmp.Key, "pub=(%s) pubTmp=(%s)", pub.Key, pubTmp.Key)
-		pubTmp = pkg.NewJWK(ed25519.PublicKey(nil))
+		pubTmp = pkg.NewJWK(pkg.Ed25519PublicKey(nil))
 		pkg.Must(yaml.Unmarshal(pkg.Must1(yaml.Marshal(pub)), &pubTmp))
 		require.Equal(t, pub.Key, pubTmp.Key, "pub=(%s) pubTmp=(%s)", pub.Key, pubTmp.Key)
-		pubTmp = pkg.NewJWK(ed25519.PublicKey(nil))
+		pubTmp = pkg.NewJWK(pkg.Ed25519PublicKey(nil))
 		pkg.Must(pubTmp.UnmarshalBinary(pkg.Must1(pub.MarshalBinary())))
 		require.Equal(t, pub.Key, pubTmp.Key, "pub=(%s) pubTmp=(%s)", pub.Key, pubTmp.Key)
 	}
 	{
-		prv := pkg.NewJWK(pkg.Must1(ecdh.X25519().GenerateKey(rand.Reader)))
+		prv := pkg.NewJWK(pkg.Must1(pkg.Curve.X25519().GenerateKey(rand.Reader)))
 		pub := pkg.NewJWK(prv.Key.PublicKey())
 
-		prvTmp := pkg.NewJWK((*ecdh.PrivateKey)(nil))
+		prvTmp := pkg.NewJWK((*pkg.ECDHPrivateKey)(nil))
 		pkg.Must(json.Unmarshal(pkg.Must1(json.Marshal(prv)), &prvTmp))
 		require.True(t, prv.Key.Equal(prvTmp.Key), "prv=(%s) prvTmp=(%s)", prv, prvTmp.Key)
-		prvTmp = pkg.NewJWK((*ecdh.PrivateKey)(nil))
+		prvTmp = pkg.NewJWK((*pkg.ECDHPrivateKey)(nil))
 		pkg.Must(yaml.Unmarshal(pkg.Must1(yaml.Marshal(prv)), &prvTmp))
 		require.True(t, prv.Key.Equal(prvTmp.Key), "prv=(%s) prvTmp=(%s)", prv, prvTmp.Key)
-		prvTmp = pkg.NewJWK((*ecdh.PrivateKey)(nil))
+		prvTmp = pkg.NewJWK((*pkg.ECDHPrivateKey)(nil))
 		pkg.Must(prvTmp.UnmarshalBinary(pkg.Must1(prv.MarshalBinary())))
 		require.True(t, prv.Key.Equal(prvTmp.Key), "prv=(%s) prvTmp=(%s)", prv, prvTmp.Key)
 
-		pubTmp := pkg.NewJWK((*ecdh.PublicKey)(nil))
+		pubTmp := pkg.NewJWK((*pkg.ECDHPublicKey)(nil))
 		pkg.Must(json.Unmarshal(pkg.Must1(json.Marshal(pub)), &pubTmp))
 		require.True(t, pub.Key.Equal(pubTmp.Key), "pub=(%s) pubTmp=(%s)", pub, pubTmp.Key)
-		pubTmp = pkg.NewJWK((*ecdh.PublicKey)(nil))
+		pubTmp = pkg.NewJWK((*pkg.ECDHPublicKey)(nil))
 		pkg.Must(yaml.Unmarshal(pkg.Must1(yaml.Marshal(pub)), &pubTmp))
 		require.True(t, pub.Key.Equal(pubTmp.Key), "pub=(%s) pubTmp=(%s)", pub, pubTmp.Key)
-		pubTmp = pkg.NewJWK((*ecdh.PublicKey)(nil))
+		pubTmp = pkg.NewJWK((*pkg.ECDHPublicKey)(nil))
 		pkg.Must(pubTmp.UnmarshalBinary(pkg.Must1(pub.MarshalBinary())))
 		require.True(t, pub.Key.Equal(pubTmp.Key), "pub=(%s) pubTmp=(%s)", pub, pubTmp.Key)
 
-		prv = pkg.NewJWK(pkg.Must1(ecdh.P521().GenerateKey(rand.Reader)))
+		prv = pkg.NewJWK(pkg.Must1(pkg.Curve.P521().GenerateKey(rand.Reader)))
 		pub = pkg.NewJWK(prv.Key.PublicKey())
 
-		prvTmp = pkg.NewJWK((*ecdh.PrivateKey)(nil))
+		prvTmp = pkg.NewJWK((*pkg.ECDHPrivateKey)(nil))
 		pkg.Must(json.Unmarshal(pkg.Must1(json.Marshal(prv)), &prvTmp))
 		require.True(t, prv.Key.Equal(prvTmp.Key), "prv=(%s) prvTmp=(%s)", prv, prvTmp.Key)
-		prvTmp = pkg.NewJWK((*ecdh.PrivateKey)(nil))
+		prvTmp = pkg.NewJWK((*pkg.ECDHPrivateKey)(nil))
 		pkg.Must(yaml.Unmarshal(pkg.Must1(yaml.Marshal(prv)), &prvTmp))
 		require.True(t, prv.Key.Equal(prvTmp.Key), "prv=(%s) prvTmp=(%s)", prv, prvTmp.Key)
-		prvTmp = pkg.NewJWK((*ecdh.PrivateKey)(nil))
+		prvTmp = pkg.NewJWK((*pkg.ECDHPrivateKey)(nil))
 		pkg.Must(prvTmp.UnmarshalBinary(pkg.Must1(prv.MarshalBinary())))
 		require.True(t, prv.Key.Equal(prvTmp.Key), "prv=(%s) prvTmp=(%s)", prv, prvTmp.Key)
 
-		pubTmp = pkg.NewJWK((*ecdh.PublicKey)(nil))
+		pubTmp = pkg.NewJWK((*pkg.ECDHPublicKey)(nil))
 		pkg.Must(json.Unmarshal(pkg.Must1(json.Marshal(pub)), &pubTmp))
 		require.True(t, pub.Key.Equal(pubTmp.Key), "pub=(%s) pubTmp=(%s)", pub, pubTmp.Key)
-		pubTmp = pkg.NewJWK((*ecdh.PublicKey)(nil))
+		pubTmp = pkg.NewJWK((*pkg.ECDHPublicKey)(nil))
 		pkg.Must(yaml.Unmarshal(pkg.Must1(yaml.Marshal(pub)), &pubTmp))
 		require.True(t, pub.Key.Equal(pubTmp.Key), "pub=(%s) pubTmp=(%s)", pub, pubTmp.Key)
-		pubTmp = pkg.NewJWK((*ecdh.PublicKey)(nil))
+		pubTmp = pkg.NewJWK((*pkg.ECDHPublicKey)(nil))
 		pkg.Must(pubTmp.UnmarshalBinary(pkg.Must1(pub.MarshalBinary())))
 		require.True(t, pub.Key.Equal(pubTmp.Key), "pub=(%s) pubTmp=(%s)", pub, pubTmp.Key)
 	}
 	{
-		prv := pkg.NewJWK(pkg.Must1(ecdsa.GenerateKey(elliptic.P224(), rand.Reader)))
+		prv := pkg.NewJWK(pkg.Must1(pkg.ECDSA.GenerateKey(elliptic.P224(), rand.Reader)))
 		pub := pkg.NewJWK(&prv.Key.PublicKey)
 
 		func() { _, err = json.Marshal(prv); require.ErrorIs(t, err, pkg.ErrUnimplemented) }()
 		func() { _, err = json.Marshal(pub); require.ErrorIs(t, err, pkg.ErrUnimplemented) }()
 
-		prv = pkg.NewJWK(pkg.Must1(ecdsa.GenerateKey(elliptic.P521(), rand.Reader)))
+		prv = pkg.NewJWK(pkg.Must1(pkg.ECDSA.GenerateKey(elliptic.P521(), rand.Reader)))
 		pub = pkg.NewJWK(&prv.Key.PublicKey)
 
-		prvTmp := pkg.NewJWK((*ecdsa.PrivateKey)(nil))
+		prvTmp := pkg.NewJWK((*pkg.ECDSAPrivateKey)(nil))
 		pkg.Must(json.Unmarshal(pkg.Must1(json.Marshal(prv)), &prvTmp))
 		require.True(t, prv.Key.Equal(prvTmp.Key), "prv=(%s) prvTmp=(%s)", prv.Key, prvTmp.Key)
-		prvTmp = pkg.NewJWK((*ecdsa.PrivateKey)(nil))
+		prvTmp = pkg.NewJWK((*pkg.ECDSAPrivateKey)(nil))
 		pkg.Must(yaml.Unmarshal(pkg.Must1(yaml.Marshal(prv)), &prvTmp))
 		require.True(t, prv.Key.Equal(prvTmp.Key), "prv=(%s) prvTmp=(%s)", prv.Key, prvTmp.Key)
-		prvTmp = pkg.NewJWK((*ecdsa.PrivateKey)(nil))
+		prvTmp = pkg.NewJWK((*pkg.ECDSAPrivateKey)(nil))
 		pkg.Must(prvTmp.UnmarshalBinary(pkg.Must1(prv.MarshalBinary())))
 		require.True(t, prv.Key.Equal(prvTmp.Key), "prv=(%s) prvTmp=(%s)", prv.Key, prvTmp.Key)
 
-		pubTmp := pkg.NewJWK((*ecdsa.PublicKey)(nil))
+		pubTmp := pkg.NewJWK((*pkg.ECDSAPublicKey)(nil))
 		pkg.Must(json.Unmarshal(pkg.Must1(json.Marshal(pub)), &pubTmp))
 		require.True(t, pub.Key.Equal(pubTmp.Key), "pub=(%s) pubTmp=(%s)", pub.Key, pubTmp.Key)
-		pubTmp = pkg.NewJWK((*ecdsa.PublicKey)(nil))
+		pubTmp = pkg.NewJWK((*pkg.ECDSAPublicKey)(nil))
 		pkg.Must(yaml.Unmarshal(pkg.Must1(yaml.Marshal(pub)), &pubTmp))
 		require.True(t, pub.Key.Equal(pubTmp.Key), "pub=(%s) pubTmp=(%s)", pub.Key, pubTmp.Key)
-		pubTmp = pkg.NewJWK((*ecdsa.PublicKey)(nil))
+		pubTmp = pkg.NewJWK((*pkg.ECDSAPublicKey)(nil))
 		pkg.Must(pubTmp.UnmarshalBinary(pkg.Must1(pub.MarshalBinary())))
 		require.True(t, pub.Key.Equal(pubTmp.Key), "pub=(%s) pubTmp=(%s)", pub.Key, pubTmp.Key)
 	}
 	{
-		prv := pkg.NewJWK(pkg.Must1(rsa.GenerateKey(rand.Reader, bits)))
+		prv := pkg.NewJWK(pkg.Must1(pkg.RSA.GenerateKey(rand.Reader, bits)))
 		pub := pkg.NewJWK(&prv.Key.PublicKey)
 
-		prvTmp := pkg.NewJWK((*rsa.PrivateKey)(nil))
+		prvTmp := pkg.NewJWK((*pkg.RSAPrivateKey)(nil))
 		pkg.Must(json.Unmarshal(pkg.Must1(json.Marshal(prv)), &prvTmp))
 		require.True(t, prv.Key.Equal(prvTmp.Key), "prv=(%s) prvTmp=(%s)", prv.Key, prvTmp.Key)
-		prvTmp = pkg.NewJWK((*rsa.PrivateKey)(nil))
+		prvTmp = pkg.NewJWK((*pkg.RSAPrivateKey)(nil))
 		pkg.Must(yaml.Unmarshal(pkg.Must1(yaml.Marshal(prv)), &prvTmp))
 		require.True(t, prv.Key.Equal(prvTmp.Key), "prv=(%s) prvTmp=(%s)", prv.Key, prvTmp.Key)
-		prvTmp = pkg.NewJWK((*rsa.PrivateKey)(nil))
+		prvTmp = pkg.NewJWK((*pkg.RSAPrivateKey)(nil))
 		pkg.Must(prvTmp.UnmarshalBinary(pkg.Must1(prv.MarshalBinary())))
 		require.True(t, prv.Key.Equal(prvTmp.Key), "prv=(%s) prvTmp=(%s)", prv.Key, prvTmp.Key)
 
-		pubTmp := pkg.NewJWK((*rsa.PublicKey)(nil))
+		pubTmp := pkg.NewJWK((*pkg.RSAPublicKey)(nil))
 		pkg.Must(json.Unmarshal(pkg.Must1(json.Marshal(pub)), &pubTmp))
 		require.True(t, pub.Key.Equal(pubTmp.Key), "pub=(%s) pubTmp=(%s)", pub.Key, pubTmp.Key)
-		pubTmp = pkg.NewJWK((*rsa.PublicKey)(nil))
+		pubTmp = pkg.NewJWK((*pkg.RSAPublicKey)(nil))
 		pkg.Must(yaml.Unmarshal(pkg.Must1(yaml.Marshal(pub)), &pubTmp))
 		require.True(t, pub.Key.Equal(pubTmp.Key), "pub=(%s) pubTmp=(%s)", pub.Key, pubTmp.Key)
-		pubTmp = pkg.NewJWK((*rsa.PublicKey)(nil))
-		pkg.Must(pubTmp.UnmarshalBinary(pkg.Must1(pub.MarshalBinary())))
-		require.True(t, pub.Key.Equal(pubTmp.Key), "pub=(%s) pubTmp=(%s)", pub.Key, pubTmp.Key)
-
-		prv = pkg.NewJWK(pkg.Must1(rsa.GenerateMultiPrimeKey(rand.Reader, 4, bits)))
-		pub = pkg.NewJWK(&prv.Key.PublicKey)
-
-		prvTmp = pkg.NewJWK((*rsa.PrivateKey)(nil))
-		pkg.Must(json.Unmarshal(pkg.Must1(json.Marshal(prv)), &prvTmp))
-		require.True(t, prv.Key.Equal(prvTmp.Key), "prv=(%s) prvTmp=(%s)", prv.Key, prvTmp.Key)
-		prvTmp = pkg.NewJWK((*rsa.PrivateKey)(nil))
-		pkg.Must(yaml.Unmarshal(pkg.Must1(yaml.Marshal(prv)), &prvTmp))
-		require.True(t, prv.Key.Equal(prvTmp.Key), "prv=(%s) prvTmp=(%s)", prv.Key, prvTmp.Key)
-		prvTmp = pkg.NewJWK((*rsa.PrivateKey)(nil))
-		pkg.Must(prvTmp.UnmarshalBinary(pkg.Must1(prv.MarshalBinary())))
-		require.True(t, prv.Key.Equal(prvTmp.Key), "prv=(%s) prvTmp=(%s)", prv.Key, prvTmp.Key)
-
-		pubTmp = pkg.NewJWK((*rsa.PublicKey)(nil))
-		pkg.Must(json.Unmarshal(pkg.Must1(json.Marshal(pub)), &pubTmp))
-		require.True(t, pub.Key.Equal(pubTmp.Key), "pub=(%s) pubTmp=(%s)", pub.Key, pubTmp.Key)
-		pubTmp = pkg.NewJWK((*rsa.PublicKey)(nil))
-		pkg.Must(yaml.Unmarshal(pkg.Must1(yaml.Marshal(pub)), &pubTmp))
-		require.True(t, pub.Key.Equal(pubTmp.Key), "pub=(%s) pubTmp=(%s)", pub.Key, pubTmp.Key)
-		pubTmp = pkg.NewJWK((*rsa.PublicKey)(nil))
+		pubTmp = pkg.NewJWK((*pkg.RSAPublicKey)(nil))
 		pkg.Must(pubTmp.UnmarshalBinary(pkg.Must1(pub.MarshalBinary())))
 		require.True(t, pub.Key.Equal(pubTmp.Key), "pub=(%s) pubTmp=(%s)", pub.Key, pubTmp.Key)
 	}

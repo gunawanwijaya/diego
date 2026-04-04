@@ -3,6 +3,7 @@ package pkg
 import (
 	"bytes"
 	"crypto"
+	"encoding"
 	"encoding/json"
 	"slices"
 	"time"
@@ -102,119 +103,127 @@ func (x JWTClaims) With(k string, v any) JWTClaims {
 func (x JWTClaims) Sign(s Signer) (*JWT, error) {
 	jwtInfo := func(v Verifier) string {
 		switch s := v.(type) {
-		default:
-			return ""
-		case ed25519Args:
+		case implSigner[ed25519Args]:
 			return "EdDSA"
-		case ecdsaArgs:
-			hash, _ := s.info(s.pub.Curve)
-			alg := map[crypto.Hash]string{
+		case implSigner[ecdsaArgs]:
+			return map[crypto.Hash]string{
 				crypto.SHA256: "ES256",
 				crypto.SHA384: "ES384",
 				crypto.SHA512: "ES512",
-			}[hash]
-			return alg
-		case hmacArgs:
-			alg := map[crypto.Hash]string{
+			}[s.metadata.hash]
+		case implSigner[hmacArgs]:
+			return map[crypto.Hash]string{
 				crypto.SHA256: "HS256",
 				crypto.SHA384: "HS384",
 				crypto.SHA512: "HS512",
-			}[s.h]
-			return alg
-		case rsaArgs:
-			if s.mode < 2 || s.mode > 3 {
-				return ""
-			}
-			alg := map[int]map[crypto.Hash]string{
-				2: {
-					crypto.SHA256: "RS256",
-					crypto.SHA384: "RS384",
-					crypto.SHA512: "RS512",
-				},
-				3: {
-					crypto.SHA256: "PS256",
-					crypto.SHA384: "PS384",
-					crypto.SHA512: "PS512",
-				},
-			}[s.mode][s.hash]
-			return alg
+			}[s.metadata.hash]
+		case implSigner[rsaPKCS1v15Args]:
+			return map[crypto.Hash]string{
+				crypto.SHA256: "RS256",
+				crypto.SHA384: "RS384",
+				crypto.SHA512: "RS512",
+			}[s.metadata.hash]
+		case implSigner[rsaPSSArgs]:
+			return map[crypto.Hash]string{
+				crypto.SHA256: "PS256",
+				crypto.SHA384: "PS384",
+				crypto.SHA512: "PS512",
+			}[s.metadata.hash]
 		}
+		return ""
 	}
-	var hdr []byte
+	var header B64RawUrl
 	if alg := jwtInfo(s); alg == "" {
 		return nil, ErrUnimplemented
 	} else {
-		hdr = []byte(`{"alg":"` + alg + `"}`)
+		header = B64RawUrl(`{"alg":"` + alg + `"}`)
 	}
-	sig, err := s.Sign([]byte(JWT{hdr, x, nil}.String()))
+	signature, err := s.Sign(JWT{header: header, claims: x}.presign())
 	if err != nil {
 		return nil, err
 	}
-	return &JWT{hdr, x, sig}, nil
+	return &JWT{header, x, signature}, nil
+}
+
+var _ interface {
+	Stringer
+	encoding.TextUnmarshaler
+} = (*JWT)(nil)
+
+type JWT struct {
+	header    B64RawUrl
+	claims    JWTClaims
+	signature B64RawUrl
+}
+
+func (x JWT) VerifierFromClaims(fn func(c JWTClaims) Verifier) Verifier {
+	return fn(x.claims)
 }
 
 func (x JWT) Verify(v Verifier, opts ...func(c JWTClaims) error) (JWTClaims, error) {
-	if len(x.h) < 1 {
+	if len(x.header) < 1 {
 		return nil, ErrUnimplemented
 	}
-	if len(x.c) < 1 {
+	if len(x.claims) < 1 {
 		return nil, ErrUnimplemented
 	}
-	if len(x.s) < 1 {
+	if len(x.signature) < 1 {
 		return nil, ErrUnimplemented
 	}
-	if err := v.Verify([]byte(JWT{x.h, x.c, nil}.String()), x.s); err != nil {
+	if v == nil {
+		return nil, ErrUnimplemented
+	}
+	if err := v.Verify(x.presign(), x.signature); err != nil {
 		return nil, err
 	}
 	for _, opt := range opts {
 		if opt != nil {
-			if err := opt(x.c); err != nil {
+			if err := opt(x.claims); err != nil {
 				return nil, err
 			}
 		}
 	}
-	return x.c, nil
+	return x.claims, nil
 }
 
-type JWT struct {
-	h B64RawUrl
-	c JWTClaims
-	s B64RawUrl
+func (x JWT) presign() []byte {
+	if len(x.header) < 1 || len(x.claims) < 1 {
+		return nil
+	}
+	claims, _ := json.Marshal(x.claims)
+	return []byte(x.header.String() + "." + B64RawUrl(claims).String())
 }
 
 func (x JWT) String() string {
-	var s string
-	if p, err := json.Marshal(x.c); err == nil && len(p) > 0 {
-		s += x.h.String() + "." + B64RawUrl(p).String()
-		if len(x.s) > 0 {
-			s += "." + x.s.String()
-		}
+	if len(x.presign()) < 1 {
+		return ""
 	}
-	return s
+	return string(x.presign()) + "." + x.signature.String()
 }
 
 func (x *JWT) UnmarshalText(p []byte) error {
-	if ps := bytes.Split(p, []byte(".")); 2 <= len(ps) && len(ps) <= 3 {
-		if err := x.h.UnmarshalText(ps[0]); err != nil {
-			return err
-		}
-		var c B64RawUrl
-		if err := c.UnmarshalText(ps[1]); err != nil {
-			return err
-		}
-		if err := json.Unmarshal(c, &x.c); err != nil {
-			return err
-		}
-		if len(ps) == 3 {
-			if err := x.s.UnmarshalText(ps[2]); err != nil {
-				return err
-			}
-		}
+	var c B64RawUrl
+	ps := bytes.Split(p, []byte("."))
+
+	if len(ps) != 3 {
+		return ErrorStr("invalid JWT format")
+	} else if err := x.header.UnmarshalText(ps[0]); err != nil {
+		return err
+	} else if !bytes.HasPrefix(x.header, []byte("{")) || !bytes.HasSuffix(x.header, []byte("}")) {
+		return ErrorStr("invalid JWT header")
+	} else if err := c.UnmarshalText(ps[1]); err != nil {
+		return err
+	} else if !bytes.HasPrefix(c, []byte("{")) || !bytes.HasSuffix(c, []byte("}")) {
+		return ErrorStr("invalid JWT claims format")
+	} else if err := json.Unmarshal(c, &x.claims); err != nil {
+		return err
+	} else if err := x.signature.UnmarshalText(ps[2]); err != nil {
+		return err
 	}
 	return nil
 }
 
-func (JWT) WithIssuer(iss string) func(c JWTClaims) error {
+func (JWT) CheckIssuer(iss string) func(c JWTClaims) error {
 	return func(c JWTClaims) error {
 		if c.Issuer() != iss {
 			return ErrorStr("invalid iss")
@@ -223,7 +232,7 @@ func (JWT) WithIssuer(iss string) func(c JWTClaims) error {
 	}
 }
 
-func (JWT) WithSubject(sub string) func(c JWTClaims) error {
+func (JWT) CheckSubject(sub string) func(c JWTClaims) error {
 	return func(c JWTClaims) error {
 		if c.Subject() != sub {
 			return ErrorStr("invalid sub")
@@ -232,7 +241,7 @@ func (JWT) WithSubject(sub string) func(c JWTClaims) error {
 	}
 }
 
-func (JWT) WithAudience(aud ...string) func(c JWTClaims) error {
+func (JWT) CheckAudience(aud ...string) func(c JWTClaims) error {
 	return func(c JWTClaims) error {
 		for _, v := range aud {
 			if slices.Contains(c.Audience(), v) {
@@ -243,7 +252,7 @@ func (JWT) WithAudience(aud ...string) func(c JWTClaims) error {
 	}
 }
 
-func (JWT) WithExpiresAt(exp time.Time) func(c JWTClaims) error {
+func (JWT) CheckExpiresAt(exp time.Time) func(c JWTClaims) error {
 	return func(c JWTClaims) error {
 		if !c.ExpiresAt().IsZero() && exp.After(c.ExpiresAt()) {
 			return ErrorStr("invalid exp")
@@ -252,7 +261,7 @@ func (JWT) WithExpiresAt(exp time.Time) func(c JWTClaims) error {
 	}
 }
 
-func (JWT) WithNotBefore(nbf time.Time) func(c JWTClaims) error {
+func (JWT) CheckNotBefore(nbf time.Time) func(c JWTClaims) error {
 	return func(c JWTClaims) error {
 		if !c.NotBefore().IsZero() && nbf.Before(c.NotBefore()) {
 			return ErrorStr("invalid nbf")
@@ -261,7 +270,7 @@ func (JWT) WithNotBefore(nbf time.Time) func(c JWTClaims) error {
 	}
 }
 
-func (JWT) WithIssuedAt(iat time.Time) func(c JWTClaims) error {
+func (JWT) CheckIssuedAt(iat time.Time) func(c JWTClaims) error {
 	return func(c JWTClaims) error {
 		if !c.IssuedAt().IsZero() && iat.Before(c.IssuedAt()) {
 			return ErrorStr("invalid iat")
@@ -270,7 +279,7 @@ func (JWT) WithIssuedAt(iat time.Time) func(c JWTClaims) error {
 	}
 }
 
-func (JWT) WithID(jti string) func(c JWTClaims) error {
+func (JWT) CheckID(jti string) func(c JWTClaims) error {
 	return func(c JWTClaims) error {
 		if c.ID() != jti {
 			return ErrorStr("invalid jti")

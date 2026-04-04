@@ -7,7 +7,6 @@ import (
 	"crypto/ed25519"
 	"crypto/elliptic"
 	"crypto/rsa"
-	"crypto/sha1"
 	"crypto/sha256"
 	"crypto/x509"
 	"encoding"
@@ -34,9 +33,6 @@ type KindOfAnyKey interface {
 	[]byte | KindOfPrivateKey | KindOfPublicKey
 }
 
-// ---------------------------------------------------------------------------------------------------------------------
-
-// JWKS
 type JWKS []JWKish
 
 func (x JWKS) MarshalJSON() ([]byte, error) {
@@ -52,7 +48,6 @@ func (x *JWKS) UnmarshalJSON(p []byte) error {
 	}
 	var errs []error
 	for _, e := range v {
-		// var k JWKish
 		if k, err := e.jwk(); err == nil && k != nil {
 			if p, err = json.Marshal(e); err == nil {
 				if err = json.Unmarshal(p, k); err == nil {
@@ -84,13 +79,9 @@ type JWKish interface {
 	encoding.TextUnmarshaler
 	yaml.Unmarshaler
 	X5C() []*x509.Certificate
-	X5T() []byte
 	X5TS256() []byte
 }
 
-// ---------------------------------------------------------------------------------------------------------------------
-
-// JWK
 type JWK[T KindOfAnyKey] struct {
 	Key T
 
@@ -143,14 +134,6 @@ func (x JWK[T]) PublicKey() JWKish {
 func (x JWK[T]) KID() string { return x.kid }
 
 func (x JWK[T]) X5C() []*x509.Certificate { return x.x5c }
-
-func (x JWK[T]) X5T() []byte {
-	if len(x.x5c) > 0 {
-		s := sha1.Sum(x.x5c[0].Raw)
-		return s[:]
-	}
-	return nil
-}
 
 func (x JWK[T]) X5TS256() []byte {
 	if len(x.x5c) > 0 {
@@ -223,16 +206,6 @@ func (x JWK[T]) MarshalJSON() ([]byte, error) {
 		v.DP = k.Precomputed.Dp.Bytes()
 		v.DQ = k.Precomputed.Dq.Bytes()
 		v.QI = k.Precomputed.Qinv.Bytes()
-		if crt := k.Precomputed.CRTValues; len(crt) > 0 {
-			v.OTH = make([]jwk_field_OTH, len(crt))
-			for i := range len(crt) {
-				v.OTH[i] = jwk_field_OTH{
-					R: k.Primes[2+i].Bytes(),
-					D: crt[i].Exp.Bytes(),
-					T: crt[i].Coeff.Bytes(),
-				}
-			}
-		}
 	case *ecdsa.PrivateKey:
 		var p *elliptic.CurveParams
 		var err error
@@ -287,8 +260,8 @@ func (x JWK[T]) MarshalJSON() ([]byte, error) {
 	v.KID = x.kid
 	for i, c := range x.x5c {
 		if v.X5C = append(v.X5C, c.Raw); i == 0 {
-			p1, p2 := sha1.Sum(c.Raw), sha256.Sum256(c.Raw)
-			v.X5T, v.X5TS256 = p1[:], p2[:]
+			p2 := sha256.Sum256(c.Raw)
+			v.X5TS256 = p2[:]
 		}
 	}
 	return json.Marshal(v)
@@ -349,16 +322,6 @@ func (x *JWK[T]) UnmarshalJSON(p []byte) error {
 					Dq:   new(big.Int).SetBytes(v.DQ),
 					Qinv: new(big.Int).SetBytes(v.QI),
 				},
-			}
-			for _, v := range v.OTH {
-				k.Primes = append(
-					k.Primes, new(big.Int).SetBytes(v.R),
-				)
-				k.Precomputed.CRTValues = append(k.Precomputed.CRTValues, rsa.CRTValue{
-					Exp:   new(big.Int).SetBytes(v.D),
-					Coeff: new(big.Int).SetBytes(v.T),
-					R:     new(big.Int).SetBytes(v.R),
-				})
 			}
 			k.Precompute()
 			if _, err := Validate(k); err != nil {
@@ -485,9 +448,6 @@ func (x *JWK[T]) UnmarshalJSON(p []byte) error {
 	x.kid = v.KID
 	for i, c := range v.X5C {
 		if i == 0 {
-			if p1 := sha1.Sum(c); len(v.X5T) > 0 && !bytes.Equal(v.X5T, p1[:]) {
-				return Errorf("invalid x5t thumbprint %s", v.X5T)
-			}
 			if p2 := sha256.Sum256(c); len(v.X5TS256) > 0 && !bytes.Equal(v.X5TS256, p2[:]) {
 				return Errorf("invalid x5t#s256 thumbprint %s", v.X5TS256)
 			}
@@ -692,8 +652,6 @@ func (x JWK[T]) parsePEM(p []byte) ([]byte, bool) {
 	}
 }
 
-// ---------------------------------------------------------------------------------------------------------------------
-
 type jwk_field struct {
 	KTY     jwk_KTY      `json:"kty"`                // (Key Type)
 	USE     jwk_USE      `json:"use,omitempty"`      // (Public Key Use)
@@ -705,26 +663,18 @@ type jwk_field struct {
 	X5T     B64RawUrl    `json:"x5t,omitempty"`      // (X.509 Certificate Chain #1 SHA-1 Thumbprint)
 	X5TS256 B64RawUrl    `json:"x5t#S256,omitempty"` // (X.509 Certificate Chain #1 SHA-256 Thumbprint)
 
-	CRV string          `json:"crv,omitempty"` // EC		Public
-	X   B64RawUrl       `json:"x,omitempty"`   // EC		Public
-	Y   B64RawUrl       `json:"y,omitempty"`   // EC		Private
-	D   B64RawUrl       `json:"d,omitempty"`   // EC & RSA	Private
-	E   B64RawUrl       `json:"e,omitempty"`   // RSA		Public
-	N   B64RawUrl       `json:"n,omitempty"`   // RSA		Public
-	P   B64RawUrl       `json:"p,omitempty"`   // RSA		Private
-	Q   B64RawUrl       `json:"q,omitempty"`   // RSA		Private
-	DP  B64RawUrl       `json:"dp,omitempty"`  // RSA		Private
-	DQ  B64RawUrl       `json:"dq,omitempty"`  // RSA		Private
-	QI  B64RawUrl       `json:"qi,omitempty"`  // RSA		Private
-	OTH []jwk_field_OTH `json:"oth,omitempty"` // RSA		Private
-
-	K B64RawUrl `json:"k,omitempty"` // oct
-}
-
-type jwk_field_OTH struct {
-	R B64RawUrl `json:"r,omitempty"` // RSA		Private
-	D B64RawUrl `json:"d,omitempty"` // RSA		Private
-	T B64RawUrl `json:"t,omitempty"` // RSA		Private
+	CRV string    `json:"crv,omitempty"` // Pub	EC
+	X   B64RawUrl `json:"x,omitempty"`   // Pub	EC
+	E   B64RawUrl `json:"e,omitempty"`   // Pub	RSA
+	N   B64RawUrl `json:"n,omitempty"`   // Pub	RSA
+	Y   B64RawUrl `json:"y,omitempty"`   // Prv	EC
+	D   B64RawUrl `json:"d,omitempty"`   // Prv	EC, RSA & Ed25519
+	P   B64RawUrl `json:"p,omitempty"`   // Prv	RSA
+	Q   B64RawUrl `json:"q,omitempty"`   // Prv	RSA
+	DP  B64RawUrl `json:"dp,omitempty"`  // Prv	RSA
+	DQ  B64RawUrl `json:"dq,omitempty"`  // Prv	RSA
+	QI  B64RawUrl `json:"qi,omitempty"`  // Prv	RSA
+	K   B64RawUrl `json:"k,omitempty"`   // oct
 }
 
 func (x jwk_field) jwk() (JWKish, error) {
@@ -774,8 +724,6 @@ func (x jwk_field) jwk() (JWKish, error) {
 	return nil, ErrUnimplemented
 }
 
-// ---------------------------------------------------------------------------------------------------------------------
-
 type jwk_KTY string
 type jwk_USE string
 type jwk_KEYOPS string
@@ -789,22 +737,27 @@ const (
 	jwk_KTY_OKP jwk_KTY = "OKP"
 	jwk_KTY_oct jwk_KTY = "oct"
 
-	jwk_USE_enc jwk_USE = "enc"
-	jwk_USE_sig jwk_USE = "sig"
+	// jwk_USE_enc jwk_USE = "enc"
+	// jwk_USE_sig jwk_USE = "sig"
 
-	jwk_KEYOPS_sign       jwk_KEYOPS = "sign"
-	jwk_KEYOPS_verify     jwk_KEYOPS = "verify"
-	jwk_KEYOPS_encrypt    jwk_KEYOPS = "encrypt"
-	jwk_KEYOPS_decrypt    jwk_KEYOPS = "decrypt"
-	jwk_KEYOPS_wrapKey    jwk_KEYOPS = "wrapKey"
-	jwk_KEYOPS_unwrapKey  jwk_KEYOPS = "unwrapKey"
-	jwk_KEYOPS_deriveKey  jwk_KEYOPS = "deriveKey"
-	jwk_KEYOPS_deriveBits jwk_KEYOPS = "deriveBits"
+	// jwk_KEYOPS_sign       jwk_KEYOPS = "sign"
+	// jwk_KEYOPS_verify     jwk_KEYOPS = "verify"
+	// jwk_KEYOPS_encrypt    jwk_KEYOPS = "encrypt"
+	// jwk_KEYOPS_decrypt    jwk_KEYOPS = "decrypt"
+	// jwk_KEYOPS_wrapKey    jwk_KEYOPS = "wrapKey"
+	// jwk_KEYOPS_unwrapKey  jwk_KEYOPS = "unwrapKey"
+	// jwk_KEYOPS_deriveKey  jwk_KEYOPS = "deriveKey"
+	// jwk_KEYOPS_deriveBits jwk_KEYOPS = "deriveBits"
 )
 
-// ---------------------------------------------------------------------------------------------------------------------
+var _, _ interface {
+	json.Marshaler
+	yaml.Marshaler
+	yaml.Unmarshaler
+	json.Unmarshaler
+	encoding.TextUnmarshaler
+} = (*B64RawUrl)(nil), (*B64Std)(nil)
 
-// B64RawUrl
 type B64RawUrl []byte
 
 func (B64RawUrl) z() *base64.Encoding { return base64.RawURLEncoding.Strict() }
@@ -832,9 +785,6 @@ func (x *B64RawUrl) UnmarshalText(p []byte) error {
 	return err
 }
 
-// ---------------------------------------------------------------------------------------------------------------------
-
-// B64Std
 type B64Std []byte
 
 func (B64Std) z() *base64.Encoding { return base64.StdEncoding.Strict() }
