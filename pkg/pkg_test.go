@@ -89,16 +89,16 @@ func TestCertificate(t *testing.T) {
 
 func TestDoubleRatchet(t *testing.T) {
 	curve := ecdh.X25519()
-	kp_A := pkg.Must1(doubleratchet.DefaultCrypto{}.GenerateDH())
-	kp_B := pkg.Must1(doubleratchet.DefaultCrypto{}.GenerateDH())
+	keypairA := pkg.Must1(doubleratchet.DefaultCrypto{}.GenerateDH())
+	keypairB := pkg.Must1(doubleratchet.DefaultCrypto{}.GenerateDH())
 
-	id_A := &pkg.Identity{
-		IdentityKey:   pkg.Must1(curve.NewPrivateKey(kp_A.PrivateKey())),
+	idA := &pkg.Identity{
+		IdentityKey:   pkg.Must1(curve.NewPrivateKey(keypairA.PrivateKey())),
 		SignedPreKey:  pkg.Must1(curve.GenerateKey(rand.Reader)),
 		OneTimePreKey: []*ecdh.PrivateKey{pkg.Must1(curve.GenerateKey(rand.Reader))},
 	}
-	id_B := &pkg.Identity{
-		IdentityKey:   pkg.Must1(curve.NewPrivateKey(kp_B.PrivateKey())),
+	idB := &pkg.Identity{
+		IdentityKey:   pkg.Must1(curve.NewPrivateKey(keypairB.PrivateKey())),
 		SignedPreKey:  pkg.Must1(curve.GenerateKey(rand.Reader)),
 		OneTimePreKey: []*ecdh.PrivateKey{pkg.Must1(curve.GenerateKey(rand.Reader))},
 	}
@@ -107,41 +107,41 @@ func TestDoubleRatchet(t *testing.T) {
 
 	for _, sk := range [][2][]byte{
 		{
-			pkg.Must1(id_A.ECDH(id_B.IdentityKey.PublicKey())),
-			pkg.Must1(id_B.ECDH(id_A.IdentityKey.PublicKey())),
+			pkg.Must1(idA.ECDH(idB.IdentityKey.PublicKey())),
+			pkg.Must1(idB.ECDH(idA.IdentityKey.PublicKey())),
 		},
 		{
-			pkg.Must1(id_A.ECTwoDH_A(id_B.IdentityKey.PublicKey(), id_B.SignedPreKey.PublicKey(), aEK)),
-			pkg.Must1(id_B.ECTwoDH_B(id_A.IdentityKey.PublicKey(), aEK.PublicKey())),
+			pkg.Must1(idA.ECTwoDH_A(idB.IdentityKey.PublicKey(), idB.SignedPreKey.PublicKey(), aEK)),
+			pkg.Must1(idB.ECTwoDH_B(idA.IdentityKey.PublicKey(), aEK.PublicKey())),
 		},
 		{
-			pkg.Must1(id_A.EC2DH_A(id_B.IdentityKey.PublicKey(), id_B.SignedPreKey.PublicKey(), aEK)),
-			pkg.Must1(id_B.EC2DH_B(id_A.IdentityKey.PublicKey(), aEK.PublicKey())),
+			pkg.Must1(idA.EC2DH_A(idB.IdentityKey.PublicKey(), idB.SignedPreKey.PublicKey(), aEK)),
+			pkg.Must1(idB.EC2DH_B(idA.IdentityKey.PublicKey(), aEK.PublicKey())),
 		},
 		{
-			pkg.Must1(id_A.EC3DH_A(id_B.IdentityKey.PublicKey(), id_B.SignedPreKey.PublicKey(), aEK)),
-			pkg.Must1(id_B.EC3DH_B(id_A.IdentityKey.PublicKey(), aEK.PublicKey())),
+			pkg.Must1(idA.EC3DH_A(idB.IdentityKey.PublicKey(), idB.SignedPreKey.PublicKey(), aEK)),
+			pkg.Must1(idB.EC3DH_B(idA.IdentityKey.PublicKey(), aEK.PublicKey())),
 		},
 		{
-			pkg.Must1(id_A.ECX3DH_A(id_B.IdentityKey.PublicKey(), id_B.SignedPreKey.PublicKey(), id_B.OneTimePreKey[0].PublicKey(), aEK)),
-			pkg.Must1(id_B.ECX3DH_B(id_A.IdentityKey.PublicKey(), aEK.PublicKey(), id_B.OneTimePreKey[0].PublicKey())),
+			pkg.Must1(idA.ECX3DH_A(idB.IdentityKey.PublicKey(), idB.SignedPreKey.PublicKey(), idB.OneTimePreKey[0].PublicKey(), aEK)),
+			pkg.Must1(idB.ECX3DH_B(idA.IdentityKey.PublicKey(), aEK.PublicKey(), idB.OneTimePreKey[0].PublicKey())),
 		},
 	} {
 		require.Equal(t, sk[0], sk[1])
 		sessStorage := doubleratchet.SessionStorage(nil)
 		keysStorage := &doubleratchet.KeysStorageInMemory{}
-		sess_A := pkg.Must1(doubleratchet.New([]byte("sess-a"), sk[0], kp_A, sessStorage, doubleratchet.WithKeysStorage(keysStorage)))
-		sess_B := pkg.Must1(doubleratchet.NewWithRemoteKey([]byte("sess-b"), sk[1], kp_A.PublicKey(), sessStorage, doubleratchet.WithKeysStorage(keysStorage)))
+		sessA := pkg.Must1(doubleratchet.New([]byte("sess-a"), sk[0], keypairA, sessStorage, doubleratchet.WithKeysStorage(keysStorage)))
+		sessB := pkg.Must1(doubleratchet.NewWithRemoteKey([]byte("sess-b"), sk[1], keypairA.PublicKey(), sessStorage, doubleratchet.WithKeysStorage(keysStorage)))
 
 		msg := []byte("hello bob")
-		enc := pkg.Must1(sess_A.RatchetEncrypt(msg, nil))
-		dec := pkg.Must1(sess_B.RatchetDecrypt(enc, nil))
+		enc := pkg.Must1(sessA.RatchetEncrypt(msg, nil))
+		dec := pkg.Must1(sessB.RatchetDecrypt(enc, nil))
 		require.Equal(t, msg, dec)
 		require.NotNil(t, pkg.Ok1(pkg.Must2(keysStorage.Get(enc.Header.DH, uint(enc.Header.N)))))
 
 		msg = []byte("hello to you too alice")
-		enc = pkg.Must1(sess_B.RatchetEncrypt(msg, nil))
-		dec = pkg.Must1(sess_A.RatchetDecrypt(enc, nil))
+		enc = pkg.Must1(sessB.RatchetEncrypt(msg, nil))
+		dec = pkg.Must1(sessA.RatchetDecrypt(enc, nil))
 		require.Equal(t, msg, dec)
 		require.NotNil(t, pkg.Ok1(pkg.Must2(keysStorage.Get(enc.Header.DH, uint(enc.Header.N)))))
 	}
@@ -159,49 +159,49 @@ func TestCrypto__CipherMLKEM(t *testing.T) {
 	// 08. client generate sk_B1 by decaps cip_B
 	// 09. server generate sk_C1 by xoring sk_B1 & sk_A0
 	// 10. sk_A0 & sk_A1 is now symmetric
-	decap_A := pkg.Must1(mlkem.GenerateKey1024())
-	decap_B := pkg.Must1(mlkem.GenerateKey1024())
-	var encap_A, encap_B crypto.Encapsulator
-	switch ek_A := decap_A.Encapsulator().Bytes(); len(ek_A) {
+	decapA := pkg.Must1(mlkem.GenerateKey1024())
+	decapB := pkg.Must1(mlkem.GenerateKey1024())
+	var encapA, encapB crypto.Encapsulator
+	switch ekA := decapA.Encapsulator().Bytes(); len(ekA) {
 	case mlkem.EncapsulationKeySize1024:
-		encap_A = pkg.Must1(mlkem.NewEncapsulationKey1024(ek_A))
+		encapA = pkg.Must1(mlkem.NewEncapsulationKey1024(ekA))
 	case mlkem.EncapsulationKeySize768:
-		encap_A = pkg.Must1(mlkem.NewEncapsulationKey768(ek_A))
+		encapA = pkg.Must1(mlkem.NewEncapsulationKey768(ekA))
 	default:
 		t.FailNow()
 	}
-	switch ek_B := decap_B.Encapsulator().Bytes(); len(ek_B) {
+	switch ekB := decapB.Encapsulator().Bytes(); len(ekB) {
 	case mlkem.EncapsulationKeySize1024:
-		encap_B = pkg.Must1(mlkem.NewEncapsulationKey1024(ek_B))
+		encapB = pkg.Must1(mlkem.NewEncapsulationKey1024(ekB))
 	case mlkem.EncapsulationKeySize768:
-		encap_B = pkg.Must1(mlkem.NewEncapsulationKey768(ek_B))
+		encapB = pkg.Must1(mlkem.NewEncapsulationKey768(ekB))
 	default:
 		t.FailNow()
 	}
 
 	const n = mlkem.SharedKeySize
-	sk_C0, sk_C1 := new([n]byte)[:], new([n]byte)[:]
+	skC0, skC1 := new([n]byte)[:], new([n]byte)[:]
 
-	sk_A0, cip_A := encap_A.Encapsulate()          // 02
-	sk_B0, cip_B := encap_B.Encapsulate()          // 04
-	sk_A1 := pkg.Must1(decap_A.Decapsulate(cip_A)) // 05
-	sk_B1 := pkg.Must1(decap_B.Decapsulate(cip_B)) // 08
-	for i := range n {                             // xor loop
-		sk_C0[i] = sk_B0[i] ^ sk_A1[i] // 06
-		sk_C1[i] = sk_B1[i] ^ sk_A0[i] // 09
+	skA0, cipA := encapA.Encapsulate()          // 02
+	skB0, cipB := encapB.Encapsulate()          // 04
+	skA1 := pkg.Must1(decapA.Decapsulate(cipA)) // 05
+	skB1 := pkg.Must1(decapB.Decapsulate(cipB)) // 08
+	for i := range n {                          // xor loop
+		skC0[i] = skB0[i] ^ skA1[i] // 06
+		skC1[i] = skB1[i] ^ skA0[i] // 09
 	}
 
-	require.Equal(t, n, len(sk_A0))
-	require.Equal(t, n, len(sk_A1))
-	require.Equal(t, sk_A0, sk_A1)
-	require.Equal(t, n, len(sk_B0))
-	require.Equal(t, n, len(sk_B1))
-	require.Equal(t, sk_B0, sk_B1)
-	require.Equal(t, sk_C0, sk_C1)
-	require.NotEqual(t, sk_C0, sk_A0)
-	require.NotEqual(t, sk_C0, sk_B0)
-	require.NotEqual(t, sk_C1, sk_A1)
-	require.NotEqual(t, sk_C1, sk_B1)
+	require.Equal(t, n, len(skA0))
+	require.Equal(t, n, len(skA1))
+	require.Equal(t, skA0, skA1)
+	require.Equal(t, n, len(skB0))
+	require.Equal(t, n, len(skB1))
+	require.Equal(t, skB0, skB1)
+	require.Equal(t, skC0, skC1)
+	require.NotEqual(t, skC0, skA0)
+	require.NotEqual(t, skC0, skB0)
+	require.NotEqual(t, skC1, skA1)
+	require.NotEqual(t, skC1, skB1)
 }
 
 func TestCrypto__KeyWrap(t *testing.T) {
@@ -523,8 +523,8 @@ func TestCrypto_JWK(t *testing.T) {
 	}
 
 	{
-		pub_, prv_ := pkg.Must2(pkg.Ed25519.GenerateKey(rand.Reader))
-		pub, prv := pkg.NewJWK(pub_), pkg.NewJWK(prv_)
+		pubKey, prvKey := pkg.Must2(pkg.Ed25519.GenerateKey(rand.Reader))
+		pub, prv := pkg.NewJWK(pubKey), pkg.NewJWK(prvKey)
 
 		prvTmp := pkg.NewJWK(pkg.Ed25519PrivateKey(nil))
 		pkg.Must(json.Unmarshal(pkg.Must1(json.Marshal(prv)), &prvTmp))

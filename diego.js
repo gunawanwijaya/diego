@@ -1,10 +1,10 @@
-function decrypt(){return}
-function encrypt(){return}
-function exportKey(){return}
-function generateKey(){return}
-function importKey(){return}
-function sign(){return}
-function verify(){return}
+function decrypt() { return }
+function encrypt() { return }
+function exportKey() { return }
+function generateKey() { return }
+function importKey() { return }
+function sign() { return }
+function verify() { return }
 
 // upon new connection
 // 1 client > will generateKey, then exportKey the privateKey to the localStorage and the publicKey via
