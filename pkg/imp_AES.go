@@ -5,6 +5,8 @@ import (
 	"crypto/cipher"
 	"io"
 	"slices"
+
+	"github.com/gunawanwijaya/diego/pkg/internal/aes/keywrap"
 )
 
 var AES aesArgs
@@ -13,6 +15,18 @@ type aesArgs struct {
 	pkcs5
 	iv
 	aead
+}
+
+func (x aesArgs) KeyWrap(wrapper []byte) (KeyWrapper, error) {
+	block, err := aes.NewCipher(wrapper)
+	if err != nil {
+		return nil, err
+	}
+	return implKeyWrapper[aesArgs]{
+		metadata:   x,
+		implWrap:   func(key []byte) ([]byte, error) { return keywrap.WrapB(block, key) },
+		implUnwrap: func(wrappedKey []byte) ([]byte, error) { return keywrap.UnwrapB(block, wrappedKey) },
+	}, nil
 }
 
 func (x aesArgs) CBC(key, iv []byte) (Cipher, error) {
@@ -24,7 +38,7 @@ func (x aesArgs) CBC(key, iv []byte) (Cipher, error) {
 		metadata: x,
 		implEncrypt: func(msg []byte) ([]byte, error) {
 			n, dst, niv := x.buildCache(block.BlockSize(), iv)
-			msgPad := x.Padding(n, msg)
+			msgPad := x.padding(n, msg)
 			cip := make([]byte, len(msgPad))
 			cipher.NewCBCEncrypter(block, niv).CryptBlocks(cip, msgPad)
 			return slices.Concat(dst, cip), nil
@@ -33,7 +47,7 @@ func (x aesArgs) CBC(key, iv []byte) (Cipher, error) {
 			n, niv, cip := x.parseFromCiphertext(block.BlockSize(), iv, cip)
 			msg := make([]byte, len(cip))
 			cipher.NewCBCDecrypter(block, niv).CryptBlocks(msg, cip)
-			return x.Trimming(n, msg), nil
+			return x.trimming(n, msg), nil
 		},
 	}, nil
 }

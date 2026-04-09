@@ -50,8 +50,8 @@ var (
 	ErrInvalidKey = errors.New("keywrap: invalid AES key")
 )
 
-// Wrap a key using the RFC 3394 AES Key Wrap Algorithm.
-func Wrap(key, plainText []byte) ([]byte, error) {
+// WrapA a key using the RFC 3394 AES Key WrapA Algorithm.
+func WrapA(key, plainText []byte) ([]byte, error) {
 	if len(plainText)%8 != 0 {
 		return nil, ErrWrapPlaintext
 	}
@@ -99,8 +99,8 @@ func Wrap(key, plainText []byte) ([]byte, error) {
 	return append(block[:8], intermediate...), nil
 }
 
-// Unwrap a key using the RFC 3394 AES Key Wrap Algorithm.
-func Unwrap(key, cipherText []byte) ([]byte, error) {
+// UnwrapA a key using the RFC 3394 AES Key Wrap Algorithm.
+func UnwrapA(key, cipherText []byte) ([]byte, error) {
 	if len(cipherText)%8 != 0 {
 		return nil, ErrUnwrapCiphertext
 	}

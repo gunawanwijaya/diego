@@ -28,7 +28,7 @@ import (
 	"bytes"
 	"testing"
 
-	. "github.com/gunawanwijaya/diego/pkg/aes/keywrap"
+	. "github.com/gunawanwijaya/diego/pkg/internal/aes/keywrap"
 )
 
 // A.1.8 - JSON Web Encryption
@@ -37,7 +37,7 @@ func TestWrap(t *testing.T) {
 	sharedKey := []byte{25, 172, 32, 130, 225, 114, 26, 181, 138, 106, 254, 192, 95, 133, 74, 82}
 	expectedWrappedKey := []byte{164, 255, 251, 1, 64, 200, 65, 200, 34, 197, 81, 143, 43, 211, 240, 38, 191, 161, 181, 117, 119, 68, 44, 80}
 
-	wrappedKey, err := Wrap(sharedKey, key)
+	wrappedKey, err := WrapA(sharedKey, key)
 	if err != nil {
 		t.Fatal("keywrap: failed to Wrap key: ", err)
 	}
@@ -53,7 +53,7 @@ func TestUnwrap(t *testing.T) {
 	wrappedKey := []byte{164, 255, 251, 1, 64, 200, 65, 200, 34, 197, 81, 143, 43, 211, 240, 38, 191, 161, 181, 117, 119, 68, 44, 80}
 	expectedKey := []byte{64, 154, 239, 170, 64, 40, 195, 99, 19, 84, 192, 142, 192, 238, 207, 217}
 
-	key, err := Unwrap(sharedKey, wrappedKey)
+	key, err := UnwrapA(sharedKey, wrappedKey)
 	if err != nil {
 		t.Fatal("keywrap: failed to unwrap key: ", err)
 	}
@@ -67,13 +67,13 @@ func TestUnwrap(t *testing.T) {
 func TestWrapError(t *testing.T) {
 	plaintext := make([]byte, 7)
 	key := make([]byte, 32)
-	_, err := Wrap(key, plaintext)
+	_, err := WrapA(key, plaintext)
 	if err != ErrWrapPlaintext {
 		t.Fatalf("keywrap: expected Wrap to fail with %v, but have err=%v", ErrWrapPlaintext, err)
 	}
 
 	plaintext = append(plaintext, byte(0))
-	_, err = Wrap(key[:31], plaintext)
+	_, err = WrapA(key[:31], plaintext)
 	if err != ErrInvalidKey {
 		t.Fatalf("keywrap: expected Wrap to fail with %v, but have err=%v", ErrInvalidKey, err)
 	}
@@ -83,25 +83,25 @@ func TestWrapError(t *testing.T) {
 func TestUnwrapError(t *testing.T) {
 	key := []byte{64, 154, 239, 170, 64, 40, 195, 99, 19, 84, 192, 142, 192, 238, 207, 217}
 	sharedKey := []byte{25, 172, 32, 130, 225, 114, 26, 181, 138, 106, 254, 192, 95, 133, 74, 82}
-	wrapped, err := Wrap(key, sharedKey)
+	wrapped, err := WrapA(key, sharedKey)
 	if err != nil {
 		t.Fatalf("%v", err)
 	}
 
 	l := len(wrapped)
-	_, err = Unwrap(key, wrapped[:l-2])
+	_, err = UnwrapA(key, wrapped[:l-2])
 	if err != ErrUnwrapCiphertext {
 		t.Fatalf("keywrap: expected Unwrap to fail with %v, but have err=%v", ErrUnwrapCiphertext, err)
 	}
 
 	l = len(key)
-	_, err = Unwrap(key[:l-2], wrapped)
+	_, err = UnwrapA(key[:l-2], wrapped)
 	if err != ErrInvalidKey {
 		t.Fatalf("keywrap: expected Unwrap to fail with %v, but have err=%v", ErrInvalidKey, err)
 	}
 
 	wrapped[0]--
-	_, err = Unwrap(key, wrapped)
+	_, err = UnwrapA(key, wrapped)
 	if err != ErrUnwrapFailed {
 		t.Fatalf("keywrap: expected Unwrap to fail with %v, but have err=%v", ErrUnwrapFailed, err)
 	}

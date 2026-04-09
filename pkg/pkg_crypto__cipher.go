@@ -65,12 +65,12 @@ func (f implIOWriter) Write(p []byte) (int, error) { return f(p) }
 
 type pkcs5 struct{}
 
-func (pkcs5) Padding(n int, p []byte) []byte {
+func (pkcs5) padding(n int, p []byte) []byte {
 	m := n - (len(p) % n)
 	return slices.Concat(p, bytes.Repeat([]byte{byte(m)}, m))
 }
 
-func (pkcs5) Trimming(_ int, p []byte) []byte {
+func (pkcs5) trimming(_ int, p []byte) []byte {
 	m := p[len(p)-1]
 	return p[:len(p)-int(m)]
 }

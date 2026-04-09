@@ -27,6 +27,40 @@ func (NopHasher) Hash([]byte) ([]byte, error)  { return nil, ErrUnimplemented }
 func (NopHasher) Compare([]byte, []byte) error { return ErrUnimplemented }
 func (NopHasher) Validate() error              { return ErrUnimplemented }
 
+type KeyWrapper interface {
+	Unwrap(wrappedKey []byte) ([]byte, error)
+	Wrap(key []byte) ([]byte, error)
+	Validator
+}
+
+type implKeyWrapper[T any] struct {
+	metadata T
+	implUnwrap
+	implWrap
+}
+
+type implUnwrap func(wrappedKey []byte) ([]byte, error)
+type implWrap func(key []byte) ([]byte, error)
+
+func (f implUnwrap) Unwrap(wrappedKey []byte) ([]byte, error) { return f(wrappedKey) }
+func (f implWrap) Wrap(key []byte) ([]byte, error)            { return f(key) }
+
+func (x implKeyWrapper[T]) Validate() error {
+	key := Nonce(32)
+	if x.implUnwrap == nil || x.implWrap == nil {
+		return ErrUnimplemented
+	} else if wrappedKey, err := x.Wrap(key); err != nil {
+		return err
+	} else if subtle.ConstantTimeCompare(key, wrappedKey) == 1 {
+		return ErrorStr("invalid key wrapper")
+	} else if unwrappedKey, err := x.Unwrap(wrappedKey); err != nil {
+		return err
+	} else if subtle.ConstantTimeCompare(key, unwrappedKey) != 1 {
+		return ErrorStr("invalid key wrapper")
+	}
+	return nil
+}
+
 var atob = base64.RawStdEncoding.Strict().DecodeString
 var btoa = base64.RawStdEncoding.Strict().EncodeToString
 

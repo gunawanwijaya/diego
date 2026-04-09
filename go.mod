@@ -1,8 +1,9 @@
 module github.com/gunawanwijaya/diego
 
-go 1.25.0
+go 1.26.2
 
 require (
+	github.com/status-im/doubleratchet v3.0.0+incompatible
 	github.com/stretchr/testify v1.11.1
 	golang.org/x/crypto v0.49.0
 	gopkg.in/yaml.v3 v3.0.1
